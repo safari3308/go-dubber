@@ -1,0 +1,41 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+)
+
+type FFmpegConfig struct {
+	GPUPreset       string `json:"gpu_preset"`
+	GPUCq           int    `json:"gpu_cq"`
+	CPUPreset       string `json:"cpu_preset"`
+	CPUCrf          int    `json:"cpu_crf"`
+	AudioBitrate    string `json:"audio_bitrate"`
+	AudioSampleRate string `json:"audio_sample_rate"`
+	AudioChannels   string `json:"audio_channels"`
+	VolumeBoost     string `json:"volume_boost"`
+}
+
+type Config struct {
+	NasDir         string       `json:"nas_dir"`
+	ApiUrl         string       `json:"api_url"`
+	ApiToken       string       `json:"api_token"`
+	UseGPU         bool         `json:"use_gpu"`
+	Workers        int		    `json:"workers"`
+	ForceReprocess bool         `json:"force_reprocess"`
+	FFmpeg         FFmpegConfig `json:"ffmpeg"`
+}
+
+func LoadConfig(path string) (*Config, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var cfg Config
+	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
