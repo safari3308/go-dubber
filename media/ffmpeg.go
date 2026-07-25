@@ -6,6 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/safari3308/go-dubber/config"
 )
@@ -127,17 +130,80 @@ func RemuxVideo(
 		// Ultra-fast Stream Copy (5-10s)
 		ffmpegArgs = append(ffmpegArgs, "-c:v", "copy")
 	} else if cfg.UseGPU {
-		// NVENC GPU encoding at maximum speed (not bottlenecked by audio filter)
-		ffmpegArgs = append(ffmpegArgs,
-			"-c:v", "hevc_nvenc",
-			"-pix_fmt", "yuv420p",
-			"-cq", "26",
-		)
+		// GPU encoding using hardware-appropriate parameters
+		gpuCodec := cfg.FFmpeg.GPUCodec
+		if gpuCodec == "" {
+			if runtime.GOOS == "darwin" {
+				gpuCodec = "hevc_videotoolbox"
+			} else {
+				gpuCodec = "hevc_nvenc"
+			}
+		}
+
+		gpuPixFmt := cfg.FFmpeg.GPUPixFmt
+		if gpuPixFmt == "" {
+			gpuPixFmt = "yuv420p"
+		}
+
+		ffmpegArgs = append(ffmpegArgs, "-c:v", gpuCodec)
+		if gpuPixFmt != "" {
+			ffmpegArgs = append(ffmpegArgs, "-pix_fmt", gpuPixFmt)
+		}
+
+		gpuCq := cfg.FFmpeg.GPUCq
+		if strings.Contains(gpuCodec, "videotoolbox") {
+			// Apple VideoToolbox (MacBook M1/M2/M3/M4)
+			// Uses -q:v for quality control (scale ~1-100, default 60).
+			// Does NOT support -cq or -preset flags.
+			if gpuCq <= 0 {
+				gpuCq = 60
+			}
+			ffmpegArgs = append(ffmpegArgs, "-q:v", strconv.Itoa(gpuCq))
+		} else if strings.Contains(gpuCodec, "nvenc") {
+			// NVIDIA NVENC
+			if gpuCq <= 0 {
+				gpuCq = 24
+			}
+			ffmpegArgs = append(ffmpegArgs, "-cq", strconv.Itoa(gpuCq))
+			if cfg.FFmpeg.GPUPreset != "" {
+				ffmpegArgs = append(ffmpegArgs, "-preset", cfg.FFmpeg.GPUPreset)
+			}
+		} else if strings.Contains(gpuCodec, "qsv") {
+			// Intel QuickSync
+			if gpuCq <= 0 {
+				gpuCq = 24
+			}
+			ffmpegArgs = append(ffmpegArgs, "-global_quality", strconv.Itoa(gpuCq))
+			if cfg.FFmpeg.GPUPreset != "" {
+				ffmpegArgs = append(ffmpegArgs, "-preset", cfg.FFmpeg.GPUPreset)
+			}
+		} else {
+			// Fallback / Custom GPU encoder
+			if gpuCq > 0 {
+				ffmpegArgs = append(ffmpegArgs, "-q:v", strconv.Itoa(gpuCq))
+			}
+			if cfg.FFmpeg.GPUPreset != "" {
+				ffmpegArgs = append(ffmpegArgs, "-preset", cfg.FFmpeg.GPUPreset)
+			}
+		}
+
+		if len(cfg.FFmpeg.GPUExtraArgs) > 0 {
+			ffmpegArgs = append(ffmpegArgs, cfg.FFmpeg.GPUExtraArgs...)
+		}
 	} else {
+		cpuPreset := cfg.FFmpeg.CPUPreset
+		if cpuPreset == "" {
+			cpuPreset = "fast"
+		}
+		cpuCrf := cfg.FFmpeg.CPUCrf
+		if cpuCrf <= 0 {
+			cpuCrf = 26
+		}
+
 		ffmpegArgs = append(ffmpegArgs,
 			"-c:v", "libx265",
-			"-crf", "26",
-			"-preset", "fast",
+			"-crf", strconv.Itoa(cpuCrf),
+			"-preset", cpuPreset,
 		)
 	}
 

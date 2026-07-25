@@ -6,14 +6,17 @@ import (
 )
 
 type FFmpegConfig struct {
-	GPUPreset       string `json:"gpu_preset"`
-	GPUCq           int    `json:"gpu_cq"`
-	CPUPreset       string `json:"cpu_preset"`
-	CPUCrf          int    `json:"cpu_crf"`
-	AudioBitrate    string `json:"audio_bitrate"`
-	AudioSampleRate string `json:"audio_sample_rate"`
-	AudioChannels   string `json:"audio_channels"`
-	VolumeBoost     string `json:"volume_boost"`
+	GPUCodec        string   `json:"gpu_codec"`
+	GPUPreset       string   `json:"gpu_preset"`
+	GPUCq           int      `json:"gpu_cq"`
+	GPUPixFmt       string   `json:"gpu_pix_fmt"`
+	GPUExtraArgs    []string `json:"gpu_extra_args"`
+	CPUPreset       string   `json:"cpu_preset"`
+	CPUCrf          int      `json:"cpu_crf"`
+	AudioBitrate    string   `json:"audio_bitrate"`
+	AudioSampleRate string   `json:"audio_sample_rate"`
+	AudioChannels   string   `json:"audio_channels"`
+	VolumeBoost     string   `json:"volume_boost"`
 }
 
 type Config struct {

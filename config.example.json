@@ -6,8 +6,10 @@
   "workers": 2,
   "force_reprocess": false,
   "ffmpeg": {
+    "gpu_codec": "hevc_nvenc",
     "gpu_preset": "p2",
     "gpu_cq": 24,
+    "gpu_pix_fmt": "yuv420p",
     "cpu_preset": "medium",
     "cpu_crf": 23,
     "audio_bitrate": "192k",
