@@ -28,6 +28,12 @@ type FFProbeOutput struct {
 	Format  FormatInfo   `json:"format"`
 }
 
+type EmbeddedSubInfo struct {
+	SubIndex int    `json:"sub_index"`
+	Language string `json:"language"` // "vi", "en", "unknown"
+	Title    string `json:"title"`
+}
+
 type VideoInfo struct {
 	VideoCodec           string // "hevc", "h264", "vp9"...
 	IsHEVC               bool   // true if video is already HEVC/H.265
@@ -38,6 +44,36 @@ type VideoInfo struct {
 	AudioTrackCount      int
 	OriginalAudioIndices []int
 	OriginalSubIndices   []int
+	EmbeddedSubStreams   []EmbeddedSubInfo
+}
+
+// normalizeLanguage inspects stream tags to identify Vietnamese ("vi") or English ("en")
+func normalizeLanguage(tags map[string]string) string {
+	if tags == nil {
+		return "unknown"
+	}
+	langVal := ""
+	titleVal := ""
+	for k, v := range tags {
+		lk := strings.ToLower(k)
+		lv := strings.ToLower(v)
+		if lk == "language" || lk == "lang" {
+			langVal = lv
+		}
+		if lk == "title" {
+			titleVal = lv
+		}
+	}
+
+	if langVal == "vie" || langVal == "vi" || langVal == "vietnamese" || langVal == "viet" ||
+		strings.Contains(titleVal, "viet") || strings.Contains(titleVal, "tiếng việt") || strings.Contains(titleVal, "thuyết minh") {
+		return "vi"
+	}
+	if langVal == "eng" || langVal == "en" || langVal == "english" ||
+		strings.Contains(titleVal, "english") || strings.Contains(titleVal, "eng") {
+		return "en"
+	}
+	return "unknown"
 }
 
 // InspectVideo probes video resolution, codec, bitrate, and optimization matrix
@@ -64,6 +100,7 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 		HasKokoroTrack:       false,
 		OriginalAudioIndices: []int{},
 		OriginalSubIndices:   []int{},
+		EmbeddedSubStreams:   []EmbeddedSubInfo{},
 	}
 
 	audioStreamCounter := 0
@@ -110,6 +147,21 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 		case "subtitle":
 			if !isKokoro {
 				info.OriginalSubIndices = append(info.OriginalSubIndices, subStreamCounter)
+
+				lang := normalizeLanguage(s.Tags)
+				title := ""
+				for k, v := range s.Tags {
+					if strings.EqualFold(k, "title") {
+						title = v
+						break
+					}
+				}
+
+				info.EmbeddedSubStreams = append(info.EmbeddedSubStreams, EmbeddedSubInfo{
+					SubIndex: subStreamCounter,
+					Language: lang,
+					Title:    title,
+				})
 			}
 			subStreamCounter++
 		}

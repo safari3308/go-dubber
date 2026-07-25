@@ -58,7 +58,16 @@ func main() {
 	fmt.Println("\n🎉 COMPLETED ALL MEDIA PROCESSING JOBS.")
 }
 
-func findSubtitle(videoPath string) (subPath string, lang string, found bool) {
+type SelectedSubtitle struct {
+	SubPath       string
+	Language      string // "vi" or "en"
+	IsExternal    bool
+	EmbeddedIndex int // 0-based index of subtitle stream
+	Description   string
+	Found         bool
+}
+
+func findExternalViSubtitle(videoPath string) (string, bool) {
 	dir := filepath.Dir(videoPath)
 	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 
@@ -69,23 +78,21 @@ func findSubtitle(videoPath string) (subPath string, lang string, found bool) {
 		filepath.Join(dir, baseName+".vie.ass"),
 		filepath.Join(dir, baseName+"_vi.srt"),
 		filepath.Join(dir, baseName+"_vie.srt"),
-	}
-	for _, candidate := range viCandidates {
-		if utils.FileExists(candidate) {
-			return candidate, "vi", true
-		}
-	}
-
-	defaultCandidates := []string{
 		filepath.Join(dir, baseName+".srt"),
 		filepath.Join(dir, baseName+".ass"),
 		filepath.Join(dir, baseName+".vtt"),
 	}
-	for _, candidate := range defaultCandidates {
+	for _, candidate := range viCandidates {
 		if utils.FileExists(candidate) {
-			return candidate, "vi", true
+			return candidate, true
 		}
 	}
+	return "", false
+}
+
+func findExternalEnSubtitle(videoPath string) (string, bool) {
+	dir := filepath.Dir(videoPath)
+	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 
 	enCandidates := []string{
 		filepath.Join(dir, baseName+".en.srt"),
@@ -97,11 +104,89 @@ func findSubtitle(videoPath string) (subPath string, lang string, found bool) {
 	}
 	for _, candidate := range enCandidates {
 		if utils.FileExists(candidate) {
-			return candidate, "en", true
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func selectSubtitle(videoPath string, videoInfo *media.VideoInfo) SelectedSubtitle {
+	// Priority 1: Embedded Vietnamese subtitle
+	for _, sub := range videoInfo.EmbeddedSubStreams {
+		if sub.Language == "vi" {
+			desc := fmt.Sprintf("Selected embedded Vietnamese subtitle (track #%d", sub.SubIndex)
+			if sub.Title != "" {
+				desc += fmt.Sprintf(" - %s", sub.Title)
+			}
+			desc += ")"
+			return SelectedSubtitle{
+				Language:      "vi",
+				IsExternal:    false,
+				EmbeddedIndex: sub.SubIndex,
+				Description:   desc,
+				Found:         true,
+			}
 		}
 	}
 
-	return "", "", false
+	// Priority 2: External Vietnamese subtitle
+	if extViPath, found := findExternalViSubtitle(videoPath); found {
+		return SelectedSubtitle{
+			SubPath:     extViPath,
+			Language:    "vi",
+			IsExternal:  true,
+			Description: fmt.Sprintf("Selected external Vietnamese subtitle: %s", filepath.Base(extViPath)),
+			Found:       true,
+		}
+	}
+
+	// Priority 3: Embedded English subtitle
+	for _, sub := range videoInfo.EmbeddedSubStreams {
+		if sub.Language == "en" {
+			desc := fmt.Sprintf("Selected embedded English subtitle (track #%d", sub.SubIndex)
+			if sub.Title != "" {
+				desc += fmt.Sprintf(" - %s", sub.Title)
+			}
+			desc += ")"
+			return SelectedSubtitle{
+				Language:      "en",
+				IsExternal:    false,
+				EmbeddedIndex: sub.SubIndex,
+				Description:   desc,
+				Found:         true,
+			}
+		}
+	}
+
+	// Priority 4: External English subtitle
+	if extEnPath, found := findExternalEnSubtitle(videoPath); found {
+		return SelectedSubtitle{
+			SubPath:     extEnPath,
+			Language:    "en",
+			IsExternal:  true,
+			Description: fmt.Sprintf("Selected external English subtitle: %s", filepath.Base(extEnPath)),
+			Found:       true,
+		}
+	}
+
+	// Priority 5: Fallback to first available embedded subtitle stream
+	if len(videoInfo.EmbeddedSubStreams) > 0 {
+		sub := videoInfo.EmbeddedSubStreams[0]
+		desc := fmt.Sprintf("Selected embedded subtitle (track #%d, fallback)", sub.SubIndex)
+		lang := sub.Language
+		if lang == "unknown" {
+			lang = "en"
+		}
+		return SelectedSubtitle{
+			Language:      lang,
+			IsExternal:    false,
+			EmbeddedIndex: sub.SubIndex,
+			Description:   desc,
+			Found:         true,
+		}
+	}
+
+	return SelectedSubtitle{Found: false}
 }
 
 func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) {
@@ -137,24 +222,15 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	}
 
 	// ==========================================
-	// STEP 2: SEARCH FOR SUBTITLES (EXTERNAL -> EMBEDDED)
+	// STEP 2: SELECT BEST SUBTITLE
+	// Priority: Embedded VI -> External VI -> Embedded EN -> External EN
 	// ==========================================
-	extSubPath, currentLang, isExternalSub := findSubtitle(nasVideoPath)
-
-	// If no external subtitle file found
-	if !isExternalSub {
-		// Check embedded subtitle streams
-		if len(videoInfo.OriginalSubIndices) == 0 {
-			fmt.Println("    ⚠️ No external or embedded subtitles found. Skipping video.")
-			return
-		}
-	} else {
-		if currentLang == "vi" {
-			fmt.Printf("    💬 Detected external Vietnamese subtitle: %s\n", filepath.Base(extSubPath))
-		} else {
-			fmt.Printf("    ⚠️ Fallback to external English subtitle: %s\n", filepath.Base(extSubPath))
-		}
+	subChoice := selectSubtitle(nasVideoPath, videoInfo)
+	if !subChoice.Found {
+		fmt.Println("    ⚠️ No external or embedded subtitles found. Skipping video.")
+		return
 	}
+	fmt.Printf("    💬 %s\n", subChoice.Description)
 
 	// ==========================================
 	// STEP 3: CONFIRM DUBBING ELIGIBILITY -> DOWNLOAD VIDEO TO LOCAL SSD
@@ -168,12 +244,16 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	}
 	spinCopy.Stop(fmt.Sprintf("Downloaded original video to Local SSD! (%s)", utils.FormatDuration(time.Since(copyStart))), false)
 
+	extSubPath := subChoice.SubPath
+	currentLang := subChoice.Language
+	isExternalSub := subChoice.IsExternal
+
 	// If using embedded subtitle, extract subtitle track from local file
 	if !isExternalSub {
-		fmt.Println("    📦 No external subtitle. Extracting embedded subtitle track from local video...")
+		fmt.Printf("    📦 Extracting embedded subtitle (track #%d) from local video...\n", subChoice.EmbeddedIndex)
 		extractedSubPath := filepath.Join(localTempDir, "extracted_"+baseName+".srt")
 
-		err := media.ExtractEmbeddedSubtitle(localVideoPath, extractedSubPath, videoInfo.OriginalSubIndices[0])
+		err := media.ExtractEmbeddedSubtitle(localVideoPath, extractedSubPath, subChoice.EmbeddedIndex)
 		if err != nil {
 			fmt.Printf("    ❌ Failed to extract embedded subtitle: %v -> Skipping.\n", err)
 			_ = os.Remove(localVideoPath)
@@ -181,8 +261,6 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		}
 
 		extSubPath = extractedSubPath
-		currentLang = "en"
-		isExternalSub = false
 		fmt.Println("    ✅ Embedded subtitle extracted successfully!")
 	}
 
