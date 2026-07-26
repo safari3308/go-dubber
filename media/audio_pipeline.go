@@ -332,8 +332,8 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		// If audio exceeds subtitle duration window (+0.1s buffer), adaptively speed it up via FFmpeg atempo
 		if audioDuration > targetMaxSec+0.1 {
 			speedup := audioDuration / targetMaxSec
-			if speedup > 2.0 {
-				speedup = 2.0
+			if speedup > 1.5 {
+				speedup = 1.5
 			}
 			if speedup >= 1.05 {
 				if respeededWav, err := adjustChunkSpeed(chunkFile, speedup); err == nil && len(respeededWav) > 44 {
