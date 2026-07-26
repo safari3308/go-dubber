@@ -41,6 +41,7 @@ type VideoInfo struct {
 	Bitrate              int64  // bps
 	IsWellCompressed     bool   // true if bitrate is already optimized for resolution
 	HasKokoroTrack       bool
+	HasGenericDubTrack   bool
 	AudioTrackCount      int
 	OriginalAudioIndices []int
 	OriginalSubIndices   []int
@@ -128,13 +129,16 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			tagDump += " " + strings.ToLower(k) + ":" + strings.ToLower(v)
 		}
 
-		isKokoro := strings.Contains(tagDump, "kokoro") ||
-			strings.Contains(tagDump, "thuyết minh") ||
+		isKokoro := strings.Contains(tagDump, "kokoro") || strings.Contains(tagDump, "ai dubbed")
+		isGenericDub := strings.Contains(tagDump, "thuyết minh") ||
 			strings.Contains(tagDump, "synced embedded") ||
 			strings.Contains(tagDump, "fallback")
 
 		if isKokoro {
 			info.HasKokoroTrack = true
+		}
+		if isGenericDub {
+			info.HasGenericDubTrack = true
 		}
 
 		switch s.CodecType {

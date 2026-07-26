@@ -15,14 +15,19 @@ import (
 )
 
 type TTSRequest struct {
-	Text string `json:"text"`
-	Lang string `json:"lang"`
-	Role string `json:"role"`
+	Text  string  `json:"text"`
+	Lang  string  `json:"lang"`
+	Role  string  `json:"role"`
+	Speed float64 `json:"speed,omitempty"`
 }
 
 // RenderSingleLineTTS sends a single dialogue text line to the TTS server
 func RenderSingleLineTTS(cfg *config.Config, text, lang, role string) ([]byte, error) {
-	payload := TTSRequest{Text: text, Lang: lang, Role: role}
+	speed := cfg.TTSSpeed
+	if speed <= 0 {
+		speed = 1.2
+	}
+	payload := TTSRequest{Text: text, Lang: lang, Role: role, Speed: speed}
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -136,6 +141,11 @@ func RenderTTSFromServer(cfg *config.Config, subPath, outputWavPath, lang string
 
 	_ = writer.WriteField("lang", lang)
 	_ = writer.WriteField("role", "A")
+	speed := cfg.TTSSpeed
+	if speed <= 0 {
+		speed = 1.2
+	}
+	_ = writer.WriteField("speed", fmt.Sprintf("%.2f", speed))
 
 	_ = writer.Close()
 

@@ -24,7 +24,7 @@ func main() {
 	fmt.Println("🚀 ACTIVATING NAS DUBBER AUTOMATED PIPELINE")
 	fmt.Printf("📁 NAS Directory: %s\n", cfg.NasDir)
 	fmt.Printf("🌐 API Server: %s\n", cfg.ApiUrl)
-	fmt.Printf("⚙️ Mode: GPU=%v | ForceReprocess=%v\n", cfg.UseGPU, cfg.ForceReprocess)
+	fmt.Printf("⚙️ Mode: GPU=%v | ForceReprocess=%v | OnlyCheckKokoro=%v | TTSSpeed=%.2fx\n", cfg.UseGPU, cfg.ForceReprocess, cfg.OnlyCheckKokoro, cfg.TTSSpeed)
 	fmt.Println("==================================================")
 
 	// Automatically create local temporary directory on local SSD
@@ -215,10 +215,16 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		return
 	}
 
-	// Skip if Kokoro track already present
-	if !cfg.ForceReprocess && videoInfo.HasKokoroTrack {
-		fmt.Println("    ⏭️ Skipped: Video ALREADY contains Kokoro AI voiceover track.")
-		return
+	// Skip logic based on existing tracks and configuration
+	if !cfg.ForceReprocess {
+		if videoInfo.HasKokoroTrack {
+			fmt.Println("    ⏭️ Skipped: Video ALREADY contains Kokoro AI voiceover track.")
+			return
+		}
+		if !cfg.OnlyCheckKokoro && videoInfo.HasGenericDubTrack {
+			fmt.Println("    ⏭️ Skipped: Video contains existing Vietnamese dub track.")
+			return
+		}
 	}
 
 	// ==========================================

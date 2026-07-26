@@ -20,13 +20,15 @@ type FFmpegConfig struct {
 }
 
 type Config struct {
-	NasDir         string       `json:"nas_dir"`
-	ApiUrl         string       `json:"api_url"`
-	ApiToken       string       `json:"api_token"`
-	UseGPU         bool         `json:"use_gpu"`
-	Workers        int		    `json:"workers"`
-	ForceReprocess bool         `json:"force_reprocess"`
-	FFmpeg         FFmpegConfig `json:"ffmpeg"`
+	NasDir          string       `json:"nas_dir"`
+	ApiUrl          string       `json:"api_url"`
+	ApiToken        string       `json:"api_token"`
+	UseGPU          bool         `json:"use_gpu"`
+	Workers         int          `json:"workers"`
+	ForceReprocess  bool         `json:"force_reprocess"`
+	OnlyCheckKokoro bool         `json:"only_check_kokoro"`
+	TTSSpeed        float64      `json:"tts_speed"`
+	FFmpeg          FFmpegConfig `json:"ffmpeg"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -39,6 +41,9 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
 		return nil, err
+	}
+	if cfg.TTSSpeed <= 0 {
+		cfg.TTSSpeed = 1.2
 	}
 	return &cfg, nil
 }
