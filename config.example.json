@@ -6,7 +6,7 @@
   "workers": 2,
   "force_reprocess": false,
   "only_check_kokoro": false,
-  "tts_speed": 1.2,
+  "tts_speed": 1.1,
   "ffmpeg": {
     "gpu_codec": "hevc_nvenc",
     "gpu_preset": "p2",

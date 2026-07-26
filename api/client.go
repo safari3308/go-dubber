@@ -25,7 +25,7 @@ type TTSRequest struct {
 func RenderSingleLineTTS(cfg *config.Config, text, lang, role string) ([]byte, error) {
 	speed := cfg.TTSSpeed
 	if speed <= 0 {
-		speed = 1.2
+		speed = 1.1
 	}
 	payload := TTSRequest{Text: text, Lang: lang, Role: role, Speed: speed}
 	jsonBytes, err := json.Marshal(payload)
@@ -143,7 +143,7 @@ func RenderTTSFromServer(cfg *config.Config, subPath, outputWavPath, lang string
 	_ = writer.WriteField("role", "A")
 	speed := cfg.TTSSpeed
 	if speed <= 0 {
-		speed = 1.2
+		speed = 1.1
 	}
 	_ = writer.WriteField("speed", fmt.Sprintf("%.2f", speed))
 

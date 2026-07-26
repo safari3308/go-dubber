@@ -43,7 +43,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	if cfg.TTSSpeed <= 0 {
-		cfg.TTSSpeed = 1.2
+		cfg.TTSSpeed = 1.1
 	}
 	return &cfg, nil
 }

@@ -3,6 +3,7 @@ package media
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -315,6 +316,35 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		pcmData := wavData[44:]
 		pcmData = TrimSilencePCM16(pcmData, 300)
 
+		audioDuration := float64(len(pcmData)) / float64(sampleRate*bytesPerSample)
+		targetMaxSec := entry.EndSec - entry.StartSec
+		if i < len(entries)-1 {
+			nextStartGap := entries[i+1].StartSec - entry.StartSec
+			if nextStartGap > 0 && nextStartGap < targetMaxSec {
+				targetMaxSec = nextStartGap
+			}
+		}
+		if targetMaxSec < 0.5 {
+			targetMaxSec = 0.5
+		}
+
+		// Hybrid Adaptive Speedup:
+		// If audio exceeds subtitle duration window (+0.1s buffer), adaptively speed it up via FFmpeg atempo
+		if audioDuration > targetMaxSec+0.1 {
+			speedup := audioDuration / targetMaxSec
+			if speedup > 2.0 {
+				speedup = 2.0
+			}
+			if speedup >= 1.05 {
+				if respeededWav, err := adjustChunkSpeed(chunkFile, speedup); err == nil && len(respeededWav) > 44 {
+					respeededPcm := TrimSilencePCM16(respeededWav[44:], 300)
+					if len(respeededPcm) > 0 {
+						pcmData = respeededPcm
+					}
+				}
+			}
+		}
+
 		startByte := int(entry.StartSec*float64(sampleRate)) * bytesPerSample
 		endByte := startByte + len(pcmData)
 
@@ -333,6 +363,18 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 	err = os.WriteFile(outWavPath, finalWav, 0644)
 	_ = os.RemoveAll(chunksDir)
 	return err
+}
+
+func adjustChunkSpeed(inputWavPath string, speedup float64) ([]byte, error) {
+	outWavPath := inputWavPath + ".speed.wav"
+	defer os.Remove(outWavPath)
+
+	filter := fmt.Sprintf("atempo=%.4f", speedup)
+	cmd := exec.Command("ffmpeg", "-y", "-i", inputWavPath, "-filter:a", filter, outWavPath)
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(outWavPath)
 }
 
 func createWAVHeader(dataLen, sampleRate, numChannels, bitsPerSample int) []byte {
