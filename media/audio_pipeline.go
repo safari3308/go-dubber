@@ -31,6 +31,36 @@ var statBlacklist = []string{
 	"wind:", "earth:", "light:", "dark:",
 }
 
+// collapseRepeatedChars shorten repeated characters that appear more than 2 times in a row (wwwwwhattttttt -> what, nooooo -> no)
+// Keep valid 2-letter repeated words (look, speed, apple...)
+func collapseRepeatedChars(s string) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return s
+	}
+
+	var result []rune
+	i := 0
+	for i < len(runes) {
+		j := i
+		// Count the number of identical characters in a row (case-insensitive)
+		for j < len(runes) && unicode.ToLower(runes[j]) == unicode.ToLower(runes[i]) {
+			j++
+		}
+
+		runLength := j - i
+		if runLength >= 3 {
+			// If repeated 3 times or more -> Shorten to 1 character
+			result = append(result, runes[i])
+		} else {
+			// If repeated 1 or 2 times -> Keep original
+			result = append(result, runes[i:j]...)
+		}
+		i = j
+	}
+	return string(result)
+}
+
 // CleanDialogueLine cleans dialogue text lines for TTS synthesis
 func CleanDialogueLine(textLine string) string {
 	// 1. Remove ASS/SSA {...}, HTML <...>, brackets [...], parentheses (...)
@@ -53,19 +83,36 @@ func CleanDialogueLine(textLine string) string {
 	clean = strings.ReplaceAll(clean, "♪", "")
 	clean = strings.ReplaceAll(clean, "♫", "")
 
-	// 4. Handle stuttering (b-but -> but)
-	reStutter := regexp.MustCompile(`(?i)\b([a-zA-ZđĐ])-([a-zA-ZđĐ])`)
+	// 4. Handle stuttering (b-but -> but, wh-what -> what)
+	reStutter := regexp.MustCompile(`(?i)\b([a-zA-ZđĐ]+)-([a-zA-ZđĐ]+)`)
 	oldClean := ""
 	for oldClean != clean {
 		oldClean = clean
 		clean = reStutter.ReplaceAllStringFunc(clean, func(m string) string {
 			parts := strings.Split(m, "-")
-			if len(parts) == 2 && strings.EqualFold(parts[0], parts[1]) {
-				return parts[0]
+			if len(parts) != 2 {
+				return m
+			}
+			p0, p1 := parts[0], parts[1]
+			p0Lower, p1Lower := strings.ToLower(p0), strings.ToLower(p1)
+
+			if p0Lower == p1Lower {
+				return p0
+			}
+			if strings.HasPrefix(p1Lower, p0Lower) {
+				if len(p0) > 0 && unicode.IsUpper([]rune(p0)[0]) {
+					runes := []rune(p1)
+					runes[0] = unicode.ToUpper(runes[0])
+					return string(runes)
+				}
+				return p1
 			}
 			return m
 		})
 	}
+
+	// 🌟 4.5. Process collapse repeated characters (wwwwwhattttttt -> what, nooooo -> no)
+	clean = collapseRepeatedChars(clean)
 
 	// 5. Normalize whitespace
 	reSpace := regexp.MustCompile(`\s+`)
