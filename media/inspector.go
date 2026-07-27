@@ -8,13 +8,18 @@ import (
 	"strings"
 )
 
+type DispositionInfo struct {
+	AttachedPic int `json:"attached_pic"`
+}
+
 type StreamInfo struct {
-	Index     int               `json:"index"`
-	CodecType string            `json:"codec_type"`
-	CodecName string            `json:"codec_name"` // Codec identifier (hevc, h264...)
-	Width     int               `json:"width"`
-	BitRate   string            `json:"bit_rate"`
-	Tags      map[string]string `json:"tags"`
+	Index       int               `json:"index"`
+	CodecType   string            `json:"codec_type"`
+	CodecName   string            `json:"codec_name"` // Codec identifier (hevc, h264...)
+	Width       int               `json:"width"`
+	BitRate     string            `json:"bit_rate"`
+	Tags        map[string]string `json:"tags"`
+	Disposition DispositionInfo   `json:"disposition"`
 }
 
 type FormatInfo struct {
@@ -35,8 +40,9 @@ type EmbeddedSubInfo struct {
 }
 
 type VideoInfo struct {
-	VideoCodec           string // "hevc", "h264", "vp9"...
+	VideoCodec           string // "hevc", "h264", "vp9", "av1"...
 	IsHEVC               bool   // true if video is already HEVC/H.265
+	IsAV1                bool   // true if video is already AV1
 	Width                int
 	Bitrate              int64  // bps
 	IsWellCompressed     bool   // true if bitrate is already optimized for resolution
@@ -108,12 +114,16 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 	subStreamCounter := 0
 
 	for _, s := range probe.Streams {
-		// 1. Inspect codec & resolution
-		if s.CodecType == "video" && info.VideoCodec == "" {
+		// 1. Inspect main video stream (ignoring cover images / attached pictures)
+		if s.CodecType == "video" && info.VideoCodec == "" && s.Disposition.AttachedPic == 0 {
 			info.VideoCodec = strings.ToLower(s.CodecName)
 			info.Width = s.Width
 			if info.VideoCodec == "hevc" || info.VideoCodec == "h265" {
 				info.IsHEVC = true
+			}
+			if info.VideoCodec == "av1" {
+				info.IsAV1 = true
+				info.IsWellCompressed = true // AV1 is modern and optimal
 			}
 
 			if s.BitRate != "" {

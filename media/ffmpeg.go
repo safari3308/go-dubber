@@ -90,7 +90,7 @@ func RemuxVideo(
 		ffmpegArgs = []string{"-y", "-i", videoPath, "-i", tempMixedAudio}
 	}
 
-	// Route stream track mapping
+	// Route stream track mapping (including font attachments 0:t?)
 	if isExternalSub {
 		if info.AudioTrackCount > 0 {
 			ffmpegArgs = append(ffmpegArgs,
@@ -99,6 +99,7 @@ func RemuxVideo(
 				"-map", "1:a", // AI dubbed audio track mixed in Pass 1
 				"-map", "0:s?", // Original subtitles in video file
 				"-map", "2:s", // External subtitle file
+				"-map", "0:t?", // Embedded font attachments
 			)
 		} else {
 			ffmpegArgs = append(ffmpegArgs,
@@ -106,6 +107,7 @@ func RemuxVideo(
 				"-map", "1:a",
 				"-map", "0:s?",
 				"-map", "2:s",
+				"-map", "0:t?",
 			)
 		}
 	} else {
@@ -115,18 +117,20 @@ func RemuxVideo(
 				"-map", "0:a",
 				"-map", "1:a",
 				"-map", "0:s?",
+				"-map", "0:t?",
 			)
 		} else {
 			ffmpegArgs = append(ffmpegArgs,
 				"-map", "0:v:0",
 				"-map", "1:a",
 				"-map", "0:s?",
+				"-map", "0:t?",
 			)
 		}
 	}
 
 	// Configure Video Codec
-	if info.IsHEVC || info.IsWellCompressed {
+	if info.IsHEVC || info.IsAV1 || info.IsWellCompressed {
 		// Ultra-fast Stream Copy (5-10s)
 		ffmpegArgs = append(ffmpegArgs, "-c:v", "copy")
 	} else if cfg.UseGPU {
@@ -142,7 +146,11 @@ func RemuxVideo(
 
 		gpuPixFmt := cfg.FFmpeg.GPUPixFmt
 		if gpuPixFmt == "" {
-			gpuPixFmt = "yuv420p"
+			if strings.Contains(gpuCodec, "nvenc") {
+				gpuPixFmt = "p010le" // 10-bit color depth to eliminate anime banding
+			} else {
+				gpuPixFmt = "yuv420p10le"
+			}
 		}
 
 		ffmpegArgs = append(ffmpegArgs, "-c:v", gpuCodec)
@@ -162,16 +170,18 @@ func RemuxVideo(
 		} else if strings.Contains(gpuCodec, "nvenc") {
 			// NVIDIA NVENC
 			if gpuCq <= 0 {
-				gpuCq = 24
+				gpuCq = 21
 			}
 			ffmpegArgs = append(ffmpegArgs, "-cq", strconv.Itoa(gpuCq))
-			if cfg.FFmpeg.GPUPreset != "" {
-				ffmpegArgs = append(ffmpegArgs, "-preset", cfg.FFmpeg.GPUPreset)
+			gpuPreset := cfg.FFmpeg.GPUPreset
+			if gpuPreset == "" {
+				gpuPreset = "p6"
 			}
+			ffmpegArgs = append(ffmpegArgs, "-preset", gpuPreset, "-spatial-aq", "1", "-temporal-aq", "1")
 		} else if strings.Contains(gpuCodec, "qsv") {
 			// Intel QuickSync
 			if gpuCq <= 0 {
-				gpuCq = 24
+				gpuCq = 21
 			}
 			ffmpegArgs = append(ffmpegArgs, "-global_quality", strconv.Itoa(gpuCq))
 			if cfg.FFmpeg.GPUPreset != "" {
@@ -193,17 +203,19 @@ func RemuxVideo(
 	} else {
 		cpuPreset := cfg.FFmpeg.CPUPreset
 		if cpuPreset == "" {
-			cpuPreset = "fast"
+			cpuPreset = "medium"
 		}
 		cpuCrf := cfg.FFmpeg.CPUCrf
 		if cpuCrf <= 0 {
-			cpuCrf = 26
+			cpuCrf = 20
 		}
 
 		ffmpegArgs = append(ffmpegArgs,
 			"-c:v", "libx265",
 			"-crf", strconv.Itoa(cpuCrf),
 			"-preset", cpuPreset,
+			"-tune", "animation",
+			"-pix_fmt", "yuv420p10le",
 		)
 	}
 
@@ -221,14 +233,14 @@ func RemuxVideo(
 		subTitle = "English"
 	}
 
-	newAudioIndex := len(info.OriginalAudioIndices)
+	newAudioIndex := info.AudioTrackCount
 	ffmpegArgs = append(ffmpegArgs,
 		fmt.Sprintf("-metadata:s:a:%d", newAudioIndex), "title=AI Dubbed (Kokoro AI)",
 		fmt.Sprintf("-metadata:s:a:%d", newAudioIndex), "language="+trackLang,
 	)
 
 	if isExternalSub {
-		newSubIndex := len(info.OriginalSubIndices)
+		newSubIndex := len(info.EmbeddedSubStreams)
 		ffmpegArgs = append(ffmpegArgs,
 			fmt.Sprintf("-metadata:s:s:%d", newSubIndex), "title="+subTitle,
 			fmt.Sprintf("-metadata:s:s:%d", newSubIndex), "language="+trackLang,
