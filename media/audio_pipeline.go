@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,9 +27,9 @@ type SubEntry struct {
 
 // Blacklist for Game/Anime UI stat tables (ignored by AI reader)
 var statBlacklist = []string{
-	"name:", "sex:", "level:", "hp:", "mp:", "strength:", "stamina:",
-	"intelligence:", "spirit:", "speed:", "dexterity:", "fire:", "water:",
-	"wind:", "earth:", "light:", "dark:",
+	"name:", "sex:", "level:", "hp:", "mp:", "strength:",
+	"stamina:", "intelligence:", "spirit:", "speed:", "dexterity:",
+	"fire:", "water:", "wind:", "earth:", "light:", "dark:",
 }
 
 // collapseRepeatedChars shorten repeated characters that appear more than 2 times in a row (wwwwwhattttttt -> what, nooooo -> no)
@@ -117,7 +118,6 @@ func CleanDialogueLine(textLine string) string {
 	// 5. Normalize whitespace
 	reSpace := regexp.MustCompile(`\s+`)
 	clean = strings.TrimSpace(reSpace.ReplaceAllString(clean, " "))
-
 	if clean == "" {
 		return ""
 	}
@@ -184,7 +184,6 @@ func ParseSRT(srtPath string) ([]SubEntry, error) {
 
 		rawLines := strings.Split(m[4], "\n")
 		var cleanLines []string
-
 		for _, l := range rawLines {
 			l = strings.TrimSpace(l)
 			if l == "" || isStatLine(l) {
@@ -201,7 +200,6 @@ func ParseSRT(srtPath string) ([]SubEntry, error) {
 		}
 
 		finalText := strings.Join(cleanLines, " ")
-
 		hasAlnum := false
 		for _, r := range finalText {
 			if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -234,15 +232,29 @@ func srtTimeToSeconds(timeStr string) float64 {
 	return h*3600 + m*60 + s
 }
 
-// TrimSilencePCM16 trims leading/trailing silent PCM 16-bit samples
+// ExtractPCMFromWAV tìm vị trí chunk 'data' chuẩn xác trong file WAV (xử lý mọi độ dài Header)
+func ExtractPCMFromWAV(wavData []byte) []byte {
+	dataIdx := bytes.Index(wavData, []byte("data"))
+	if dataIdx == -1 || len(wavData) < dataIdx+8 {
+		if len(wavData) > 44 {
+			return wavData[44:]
+		}
+		return nil
+	}
+	// 'data' tag (4 bytes) + chunk size (4 bytes) -> Dữ liệu PCM nằm từ byte (dataIdx + 8)
+	return wavData[dataIdx+8:]
+}
+
+// TrimSilencePCM16 trims leading/trailing silent PCM 16-bit samples safely
 func TrimSilencePCM16(pcm []byte, threshold int16) []byte {
 	if len(pcm) < 4 {
 		return pcm
 	}
+	// Ép số lượng byte phải chia hết cho 2 để chuẩn hóa 16-bit sample
+	end := len(pcm) - (len(pcm) % 2)
 	start := 0
-	end := len(pcm)
 
-	for i := 0; i < len(pcm)-1; i += 2 {
+	for i := 0; i <= end-2; i += 2 {
 		sample := int16(pcm[i]) | (int16(pcm[i+1]) << 8)
 		if sample > threshold || sample < -threshold {
 			start = i
@@ -250,7 +262,7 @@ func TrimSilencePCM16(pcm []byte, threshold int16) []byte {
 		}
 	}
 
-	for i := len(pcm) - 2; i >= start; i -= 2 {
+	for i := end - 2; i >= start; i -= 2 {
 		sample := int16(pcm[i]) | (int16(pcm[i+1]) << 8)
 		if sample > threshold || sample < -threshold {
 			end = i + 2
@@ -266,23 +278,23 @@ func TrimSilencePCM16(pcm []byte, threshold int16) []byte {
 
 // MixPCM16 mixes PCM 16-bit audio samples onto canvas buffer
 func MixPCM16(canvas []byte, pcm []byte, startByte int) {
-	for i := 0; i < len(pcm); i += 2 {
+	// Đảm bảo startByte chia hết cho 2
+	if startByte%2 != 0 {
+		startByte--
+	}
+	for i := 0; i < len(pcm)-1; i += 2 {
 		targetIdx := startByte + i
 		if targetIdx+1 >= len(canvas) {
 			break
 		}
-
 		currSample := int16(canvas[targetIdx]) | (int16(canvas[targetIdx+1]) << 8)
 		newSample := int16(pcm[i]) | (int16(pcm[i+1]) << 8)
-
 		mixed := int32(currSample) + int32(newSample)
-
 		if mixed > 32767 {
 			mixed = 32767
 		} else if mixed < -32768 {
 			mixed = -32768
 		}
-
 		canvas[targetIdx] = byte(mixed & 0xff)
 		canvas[targetIdx+1] = byte((mixed >> 8) & 0xff)
 	}
@@ -301,7 +313,6 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 	totalEntries := len(entries)
 	sampleRate := 24000
 	bytesPerSample := 2
-
 	numWorkers := cfg.Workers
 	if numWorkers <= 0 {
 		numWorkers = 2
@@ -322,22 +333,18 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 			defer wg.Done()
 			for job := range jobs {
 				chunkFile := filepath.Join(chunksDir, fmt.Sprintf("chunk_%04d.wav", job.Index))
-
 				if !utils.FileExists(chunkFile) {
 					wavData, err := api.RenderSingleLineTTS(cfg, job.Entry.Text, lang, "A")
 					if err != nil {
 						wavData, err = api.RenderSingleLineTTS(cfg, job.Entry.Text, lang, "A")
 					}
-
 					if err == nil && len(wavData) > 0 {
 						_ = os.WriteFile(chunkFile, wavData, 0644)
 					}
 				}
-
 				current := atomic.AddInt32(&completedCount, 1)
 				percent := float64(current) / float64(totalEntries) * 100
-				fmt.Printf("\r    🎙️ [%d/%d - %.1f%%] AI voice rendering (%d workers)...          ",
-					current, totalEntries, percent, numWorkers)
+				fmt.Printf("\r    🎙️ [%d/%d - %.1f%%] AI voice rendering (%d workers)...          ", current, totalEntries, percent, numWorkers)
 			}
 		}()
 	}
@@ -360,8 +367,16 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 			continue
 		}
 
-		pcmData := wavData[44:]
+		// 🌟 Dùng ExtractPCMFromWAV thay cho wavData[44:] để lấy đúng PCM payload
+		pcmData := ExtractPCMFromWAV(wavData)
+		if len(pcmData) == 0 {
+			continue
+		}
+
 		pcmData = TrimSilencePCM16(pcmData, 300)
+		if len(pcmData) == 0 {
+			continue
+		}
 
 		audioDuration := float64(len(pcmData)) / float64(sampleRate*bytesPerSample)
 		targetMaxSec := entry.EndSec - entry.StartSec
@@ -376,15 +391,16 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		}
 
 		// Hybrid Adaptive Speedup:
-		// If audio exceeds subtitle duration window (+0.1s buffer), adaptively speed it up via FFmpeg atempo
 		if audioDuration > targetMaxSec+0.1 {
 			speedup := audioDuration / targetMaxSec
 			if speedup > 1.5 {
 				speedup = 1.5
 			}
 			if speedup >= 1.05 {
-				if respeededWav, err := adjustChunkSpeed(chunkFile, speedup); err == nil && len(respeededWav) > 44 {
-					respeededPcm := TrimSilencePCM16(respeededWav[44:], 300)
+				if respeededWav, err := adjustChunkSpeed(chunkFile, speedup); err == nil {
+					// 🌟 Bóc tách PCM từ file respeeded của FFmpeg bằng ExtractPCMFromWAV
+					respeededPcm := ExtractPCMFromWAV(respeededWav)
+					respeededPcm = TrimSilencePCM16(respeededPcm, 300)
 					if len(respeededPcm) > 0 {
 						pcmData = respeededPcm
 					}
