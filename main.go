@@ -333,7 +333,11 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		fmt.Printf("    ⚡ Bitrate already optimized (%dp @ %d kbps) -> Enabling high-speed Copy Stream!\n", videoInfo.Width, bitrateKbps)
 	} else {
 		bitrateKbps := videoInfo.Bitrate / 1000
-		fmt.Printf("    🎬 Bitrate unoptimized (%dp @ %d kbps) -> Transcoding via GPU NVENC...\n", videoInfo.Width, bitrateKbps)
+		encoderLabel := "GPU NVENC"
+		if !cfg.UseGPU {
+			encoderLabel = "CPU libx265"
+		}
+		fmt.Printf("    🎬 Bitrate unoptimized (%dp @ %d kbps) -> Transcoding via %s...\n", videoInfo.Width, bitrateKbps, encoderLabel)
 	}
 
 	err = media.RemuxVideo(cfg, localVideoPath, localTtsWav, finalSubPath, localOutVideo, videoInfo, isExternalSub, currentLang)

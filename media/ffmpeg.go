@@ -247,9 +247,31 @@ func RemuxVideo(
 		if gpuCq <= 0 {
 			gpuCq = 26
 		}
-		ffmpegArgs = append(ffmpegArgs, "-q:v", strconv.Itoa(gpuCq))
+		
+		if strings.Contains(gpuCodec, "nvenc") {
+			ffmpegArgs = append(ffmpegArgs,
+				"-rc:v", "vbr",
+				"-cq", strconv.Itoa(gpuCq),
+				"-b:v", "0",
+				"-maxrate", "20M",
+				"-bufsize", "40M",
+				"-spatial-aq", "1", "-temporal-aq", "1",
+			)
+		} else {
+			ffmpegArgs = append(ffmpegArgs, "-q:v", strconv.Itoa(gpuCq))
+		}
 	} else {
-		ffmpegArgs = append(ffmpegArgs, "-c:v", "copy")
+		cpuCrf := cfg.FFmpeg.CPUCrf
+		if cpuCrf <= 0 {
+			cpuCrf = 22
+		}
+		ffmpegArgs = append(ffmpegArgs,
+			"-c:v", "libx265",
+			"-crf", strconv.Itoa(cpuCrf),
+			"-preset", "medium",
+			"-tune", "animation",
+			"-pix_fmt", "yuv420p10le",
+		)
 	}
 
 	// Cấu hình Codec Audio
