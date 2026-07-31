@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -164,3 +166,54 @@ func SafeReplaceOnNAS(srcLocal, dstNAS string) error {
 	return nil
 }
 
+var ones = []string{"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"}
+
+// NumberToVietnameseWords chuyển đổi số nguyên dương nhỏ/vừa sang chữ tiếng Việt
+func NumberToVietnameseWords(n int) string {
+	if n < 10 {
+		return ones[n]
+	}
+	if n < 100 {
+		ten := n / 10
+		unit := n % 10
+		tenStr := "mười"
+		if ten > 1 {
+			tenStr = ones[ten] + " mươi"
+		}
+		if unit == 0 {
+			return tenStr
+		}
+		if unit == 1 && ten > 1 {
+			return tenStr + " mốt"
+		}
+		if unit == 5 {
+			return tenStr + " lăm"
+		}
+		return tenStr + " " + ones[unit]
+	}
+	if n < 1000 {
+		hundred := n / 100
+		remainder := n % 100
+		hStr := ones[hundred] + " trăm"
+		if remainder == 0 {
+			return hStr
+		}
+		if remainder < 10 {
+			return hStr + " lẻ " + ones[remainder]
+		}
+		return hStr + " " + NumberToVietnameseWords(remainder)
+	}
+	return fmt.Sprintf("%d", n) // Trả về gốc nếu số quá lớn
+}
+
+// NormalizeVietnameseTextReplaceNumbers quét và thay thế các chuỗi số trong câu thành chữ
+func NormalizeVietnameseTextReplaceNumbers(text string) string {
+	re := regexp.MustCompile(`\d+`)
+	return re.ReplaceAllStringFunc(text, func(match string) string {
+		num, err := strconv.Atoi(match)
+		if err != nil || num > 9999 {
+			return match
+		}
+		return NumberToVietnameseWords(num)
+	})
+}

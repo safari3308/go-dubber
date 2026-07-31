@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/safari3308/go-dubber/config"
+	"github.com/safari3308/go-dubber/utils"
 )
 
 type TTSRequest struct {
@@ -27,6 +29,14 @@ func RenderSingleLineTTS(cfg *config.Config, text, lang, role string) ([]byte, e
 	if speed <= 0 {
 		speed = 1.1
 	}
+
+	normLang := strings.ToLower(strings.TrimSpace(lang))
+
+	switch normLang {
+	case "vi", "vie", "vn", "vietnamese":
+		text = utils.NormalizeVietnameseTextReplaceNumbers(text)
+	}
+
 	payload := TTSRequest{Text: text, Lang: lang, Role: role, Speed: speed}
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
