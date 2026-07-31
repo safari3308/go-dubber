@@ -219,7 +219,7 @@ func RemuxVideo(
 	)
 
 	// Cấu hình Codec Video
-	if info.IsHEVC || info.IsAV1 || info.IsWellCompressed {
+	if cfg.SkipEncode || info.IsHEVC || info.IsAV1 || info.IsWellCompressed {
 		ffmpegArgs = append(ffmpegArgs, "-c:v", "copy")
 	} else if cfg.UseGPU {
 		gpuCodec := cfg.FFmpeg.GPUCodec

@@ -5,6 +5,7 @@
   "use_gpu": true,
   "workers": 2,
   "force_reprocess": false,
+  "skip_encode": false,
   "only_check_kokoro": false,
   "tts_speed": 1.1,
   "ffmpeg": {

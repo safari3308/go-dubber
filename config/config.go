@@ -26,6 +26,7 @@ type Config struct {
 	UseGPU          bool         `json:"use_gpu"`
 	Workers         int          `json:"workers"`
 	ForceReprocess  bool         `json:"force_reprocess"`
+	SkipEncode      bool         `json:"skip_encode"`
 	OnlyCheckKokoro bool         `json:"only_check_kokoro"`
 	TTSSpeed        float64      `json:"tts_speed"`
 	FFmpeg          FFmpegConfig `json:"ffmpeg"`
