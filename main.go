@@ -310,27 +310,55 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	}
 
 	// ==========================================
-	// STEP 4: EXTRACT AUDIO ANCHOR (FROM LOCAL FILE)
-	// ==========================================
-	spinExt := utils.StartSpinner("⏱️ Extracting anchor audio track...")
-	if err := media.ExtractAudioAnchor(localVideoPath, localAnchorAudio); err != nil {
-		spinExt.Stop(fmt.Sprintf("Failed to extract anchor audio: %v", err), true)
-	} else {
-		spinExt.Stop("Anchor audio extracted successfully!", false)
-	}
-
-	// ==========================================
-	// STEP 5: SYNCHRONIZE SUBTITLE TIMELINE WITH SERVER
+	// STEP 4 & 5: SUBTITLE SYNCHRONIZATION LOGIC
 	// ==========================================
 	finalSubPath := extSubPath
-	if isExternalSub && utils.FileExists(localAnchorAudio) {
-		spinSync := utils.StartSpinner("🔄 Submitting payload to Subsync server...")
-		err := api.SyncSubtitleWithServer(cfg, extSubPath, localAnchorAudio, localSyncedSub)
-		if err != nil {
-			spinSync.Stop(fmt.Sprintf("Subtitle synchronization failed (%v), using original subtitle.", err), true)
+
+	if !isExternalSub {
+		// 🌟 KỊCH BẢN 1: Dùng Sub nhúng (Embedded)
+		// Bỏ qua sync hoàn toàn -> KHÔNG extract anchor audio vô ích
+		fmt.Println("ℹ️ [SYNC] Bỏ qua sync vì đang sử dụng Subtitle nhúng sẵn.")
+
+	} else if len(videoInfo.EmbeddedSubStreams) > 0 {
+		// 🌟 KỊCH BẢN 2: Dùng Sub ngoài + Video CÓ Sub nhúng
+		// Ưu tiên Sync Sub-với-Sub (Nhanh, chuẩn 100%, không lo giọng thì thào)
+		refSubStream := videoInfo.EmbeddedSubStreams[0] // Lấy track sub nhúng đầu tiên làm mốc
+		localRefSubPath := filepath.Join(localTempDir, "ref_embedded.srt")
+
+		spinExtractRef := utils.StartSpinner(fmt.Sprintf("📜 Trích xuất Sub nhúng #%d làm mốc tham chiếu...", refSubStream.SubIndex))
+		if err := media.ExtractEmbeddedSubtitle(localVideoPath, localRefSubPath, refSubStream.SubIndex); err != nil {
+			spinExtractRef.Stop(fmt.Sprintf("Lỗi trích xuất Sub mốc: %v", err), true)
 		} else {
-			spinSync.Stop("Subtitle timeline synchronized perfectly!", false)
-			finalSubPath = localSyncedSub
+			spinExtractRef.Stop("Đã trích xuất Sub nhúng làm mốc thành công!", false)
+
+			spinSync := utils.StartSpinner("🔄 Đang đồng bộ Sub ngoài với Sub nhúng (Sub-to-Sub)...")
+			// Gọi API Sync Sub-với-Sub (truyền file sub mốc thay vì file audio)
+			err := api.SyncSubtitleWithServer(cfg, extSubPath, localRefSubPath, localSyncedSub)
+			if err != nil {
+				spinSync.Stop(fmt.Sprintf("Sync Sub-to-Sub thất bại (%v), dùng sub gốc.", err), true)
+			} else {
+				spinSync.Stop("Đồng bộ Timeline Sub-to-Sub hoàn hảo!", false)
+				finalSubPath = localSyncedSub
+			}
+		}
+
+	} else {
+		// 🌟 KỊCH BẢN 3: Dùng Sub ngoài + Video KHÔNG CÓ Sub nhúng nào
+		// Fallback: Mới phải Extract Audio để Sync với sóng âm
+		spinExt := utils.StartSpinner("⏱️ Trích xuất Anchor Audio để phục vụ Sync âm thanh...")
+		if err := media.ExtractAudioAnchor(localVideoPath, localAnchorAudio); err != nil {
+			spinExt.Stop(fmt.Sprintf("Trích xuất Anchor Audio thất bại: %v", err), true)
+		} else {
+			spinExt.Stop("Trích xuất Anchor Audio thành công!", false)
+
+			spinSync := utils.StartSpinner("🔄 Gửi dữ liệu tới Subsync server (Audio-based)...")
+			err := api.SyncSubtitleWithServer(cfg, extSubPath, localAnchorAudio, localSyncedSub)
+			if err != nil {
+				spinSync.Stop(fmt.Sprintf("Audio Subsync thất bại (%v), dùng sub gốc.", err), true)
+			} else {
+				spinSync.Stop("Đồng bộ Sub với Audio thành công!", false)
+				finalSubPath = localSyncedSub
+			}
 		}
 	}
 

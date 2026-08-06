@@ -149,6 +149,9 @@ func CleanDialogueLine(textLine string, lang string) string {
 		clean = string(runes)
 	}
 
+	// Bên trong CleanDialogueLine
+	clean = StripFontTags(clean)
+
 	return clean
 }
 
@@ -223,6 +226,17 @@ func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
 		}
 	}
 	return entries, nil
+}
+func StripFontTags(text string) string {
+    // 1. Xóa thẻ <font ...> và </font> (không phân biệt hoa thường)
+    reFont := regexp.MustCompile(`(?i)</?font[^>]*>`)
+    text = reFont.ReplaceAllString(text, "")
+
+    // 2. Xóa các thuộc tính size/fs nếu còn sót lại dạng ASS override {\fs20}
+    reFS := regexp.MustCompile(`(?i)\{\\fs\d+\}`)
+    text = reFS.ReplaceAllString(text, "")
+
+    return text
 }
 
 func srtTimeToSeconds(timeStr string) float64 {

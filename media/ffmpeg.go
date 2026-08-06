@@ -56,7 +56,10 @@ func isAITrack(title string) bool {
 
 func isAISubTrack(title string) bool {
 	t := strings.ToLower(title)
-	return strings.Contains(t, "synced") || strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed")
+	return strings.Contains(t, "kokoro") || 
+		strings.Contains(t, "ai dubbed") || 
+		strings.Contains(t, "ai synced") || 
+		strings.Contains(t, "synced")
 }
 
 func ExtractAudioAnchor(videoPath, outputPath string) error {
@@ -85,10 +88,11 @@ func RemuxVideo(
 ) error {
 	normLang := strings.ToLower(strings.TrimSpace(lang))
 	trackLang := "vie"
-	subTitle := "Vietnamese"
+	// 🌟 Đặt nhãn chứa "AI Synced" để FFmpeg dễ dàng nhận diện và loại bỏ ở lần force sau
+	subTitle := "Vietnamese (AI Synced)"
 	if normLang == "en" || normLang == "eng" || normLang == "english" {
 		trackLang = "eng"
-		subTitle = "English"
+		subTitle = "English (AI Synced)"
 	}
 
 	streams, _ := inspectStreams(videoPath)
