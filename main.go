@@ -110,7 +110,7 @@ func findExternalEnSubtitle(videoPath string) (string, bool) {
 	return "", false
 }
 
-func selectSubtitle(videoPath string, videoInfo *media.VideoInfo) SelectedSubtitle {
+func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Config) SelectedSubtitle {
 	// Priority 1: Embedded Vietnamese subtitle
 	for _, sub := range videoInfo.EmbeddedSubStreams {
 		if sub.Language == "vi" {
@@ -137,6 +137,28 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo) SelectedSubtit
 			IsExternal:  true,
 			Description: fmt.Sprintf("Selected external Vietnamese subtitle: %s", filepath.Base(extViPath)),
 			Found:       true,
+		}
+	}
+
+	// 🌟 INTERACTIVE MODE: Hỏi người dùng chọn bằng tay nếu bật InteractiveMode và không tự động thấy VietSub
+	if cfg.InteractiveMode && len(videoInfo.EmbeddedSubStreams) > 0 {
+		fmt.Println("    ⚠️ Không tự động tìm thấy VietSub nhúng hoặc VietSub ngoài.")
+		userSelected := media.PromptUserSelectSub(videoInfo.EmbeddedSubStreams)
+		if userSelected != nil {
+			desc := fmt.Sprintf("Manual selected embedded subtitle (track #%d", userSelected.SubIndex)
+			if userSelected.Title != "" {
+				desc += fmt.Sprintf(" - %s", userSelected.Title)
+			}
+			desc += ")"
+			
+			// Giả định sub người dùng chọn thủ công là VietSub (tiếng Việt)
+			return SelectedSubtitle{
+				Language:      "vi",
+				IsExternal:    false,
+				EmbeddedIndex: userSelected.SubIndex,
+				Description:   desc,
+				Found:         true,
+			}
 		}
 	}
 
@@ -171,11 +193,15 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo) SelectedSubtit
 
 	// Priority 5: Fallback to first available embedded subtitle stream
 	if len(videoInfo.EmbeddedSubStreams) > 0 {
-		sub := videoInfo.EmbeddedSubStreams[0]
+		if cfg.DefaultSubIndex >= len(videoInfo.EmbeddedSubStreams) {
+			fmt.Println("    ⚠️ Default subtitle index is out of range. Using first subtitle.")
+			cfg.DefaultSubIndex = 0
+		}
+		sub := videoInfo.EmbeddedSubStreams[cfg.DefaultSubIndex]
 		desc := fmt.Sprintf("Selected embedded subtitle (track #%d, fallback)", sub.SubIndex)
 		lang := sub.Language
 		if lang == "unknown" {
-			lang = "en"
+			lang = cfg.SubLanguage
 		}
 		return SelectedSubtitle{
 			Language:      lang,
@@ -231,7 +257,7 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	// STEP 2: SELECT BEST SUBTITLE
 	// Priority: Embedded VI -> External VI -> Embedded EN -> External EN
 	// ==========================================
-	subChoice := selectSubtitle(nasVideoPath, videoInfo)
+	subChoice := selectSubtitle(nasVideoPath, videoInfo, cfg)
 	if !subChoice.Found {
 		fmt.Println("    ⚠️ No external or embedded subtitles found. Skipping video.")
 		return
@@ -297,7 +323,7 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	// STEP 5: SYNCHRONIZE SUBTITLE TIMELINE WITH SERVER
 	// ==========================================
 	finalSubPath := extSubPath
-	if utils.FileExists(localAnchorAudio) {
+	if isExternalSub && utils.FileExists(localAnchorAudio) {
 		spinSync := utils.StartSpinner("🔄 Submitting payload to Subsync server...")
 		err := api.SyncSubtitleWithServer(cfg, extSubPath, localAnchorAudio, localSyncedSub)
 		if err != nil {

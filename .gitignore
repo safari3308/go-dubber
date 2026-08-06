@@ -33,3 +33,4 @@ go.work.sum
 temp
 local_dub_scratch
 config.json
+dist/

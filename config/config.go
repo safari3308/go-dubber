@@ -23,6 +23,9 @@ type Config struct {
 	NasDir          string       `json:"nas_dir"`
 	ApiUrl          string       `json:"api_url"`
 	ApiToken        string       `json:"api_token"`
+	InteractiveMode bool         `json:"interactive_mode"`
+	DefaultSubIndex int          `json:"default_sub_index"`
+	SubLanguage     string       `json:"sub_language"`
 	UseGPU          bool         `json:"use_gpu"`
 	Workers         int          `json:"workers"`
 	ForceReprocess  bool         `json:"force_reprocess"`

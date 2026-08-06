@@ -63,17 +63,18 @@ func collapseRepeatedChars(s string) string {
 }
 
 // CleanDialogueLine cleans dialogue text lines for TTS synthesis
-func CleanDialogueLine(textLine string) string {
-	// 1. Remove ASS/SSA {...}, HTML <...>, brackets [...], parentheses (...)
+func CleanDialogueLine(textLine string, lang string) string {
+	// 1. Remove ASS/SSA {...} and HTML <...>
 	reASS := regexp.MustCompile(`\{[^}]+\}`)
 	reHTML := regexp.MustCompile(`<[^>]+>`)
-	reBracket := regexp.MustCompile(`\[[^\]]+\]`)
-	reParen := regexp.MustCompile(`\([^)]+\)`)
-
 	clean := reASS.ReplaceAllString(textLine, "")
 	clean = reHTML.ReplaceAllString(clean, "")
-	clean = reBracket.ReplaceAllString(clean, "")
-	clean = reParen.ReplaceAllString(clean, "")
+
+	// 💡 Giữ lại nội dung bên trong (), [], chỉ bỏ dấu ngoặc (vd: "(Tập 53)" -> "Tập 53")
+	clean = strings.ReplaceAll(clean, "(", " ")
+	clean = strings.ReplaceAll(clean, ")", " ")
+	clean = strings.ReplaceAll(clean, "[", " ")
+	clean = strings.ReplaceAll(clean, "]", " ")
 
 	// 2. Remove speaker name prefixes (e.g. "JOHN: Hello", "ANNOUNCER 1: ")
 	rePrefix := regexp.MustCompile(`^[A-ZÁÀẢÃẠÉÈẺẼẸÓÒỎÕỌÚÙỦŨỤỨỪỬỮỰÍÌỈĨỊÝỲỶỸỴĐ\s\d]+:\s*`)
@@ -96,7 +97,6 @@ func CleanDialogueLine(textLine string) string {
 			}
 			p0, p1 := parts[0], parts[1]
 			p0Lower, p1Lower := strings.ToLower(p0), strings.ToLower(p1)
-
 			if p0Lower == p1Lower {
 				return p0
 			}
@@ -112,8 +112,14 @@ func CleanDialogueLine(textLine string) string {
 		})
 	}
 
-	// 🌟 4.5. Process collapse repeated characters (wwwwwhattttttt -> what, nooooo -> no)
+	// 🌟 4.5. Process collapse repeated characters
 	clean = collapseRepeatedChars(clean)
+
+	// 🌟 4.6. Chuyển đổi số thành chữ tiếng Việt (Được gọi sau khi đã lọc HTML sạch sẽ)
+	normLang := strings.ToLower(strings.TrimSpace(lang))
+	if normLang == "vi" || normLang == "vie" || normLang == "vn" || normLang == "vietnamese" {
+		clean = utils.NormalizeVietnameseTextReplaceNumbers(clean)
+	}
 
 	// 5. Normalize whitespace
 	reSpace := regexp.MustCompile(`\s+`)
@@ -122,11 +128,10 @@ func CleanDialogueLine(textLine string) string {
 		return ""
 	}
 
-	// 6. Handle ALL-CAPS words so TTS won't spell out letter by letter
+	// 6. Handle ALL-CAPS words
 	words := strings.Fields(clean)
 	var fixedWords []string
 	reAlphaNum := regexp.MustCompile(`[^\w\s]`)
-
 	for _, w := range words {
 		core := reAlphaNum.ReplaceAllString(w, "")
 		if len(core) > 1 && isAllUpper(core) {
@@ -167,7 +172,7 @@ func isStatLine(line string) bool {
 }
 
 // ParseSRT parses and cleans SRT subtitles
-func ParseSRT(srtPath string) ([]SubEntry, error) {
+func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
 	content, err := os.ReadFile(srtPath)
 	if err != nil {
 		return nil, err
@@ -189,7 +194,7 @@ func ParseSRT(srtPath string) ([]SubEntry, error) {
 			if l == "" || isStatLine(l) {
 				continue
 			}
-			cleaned := CleanDialogueLine(l)
+			cleaned := CleanDialogueLine(l, lang)
 			if cleaned != "" {
 				cleanLines = append(cleanLines, cleaned)
 			}
@@ -302,7 +307,7 @@ func MixPCM16(canvas []byte, pcm []byte, startByte int) {
 
 // ProcessDubbingPipeline renders dialogue lines in parallel and places them on exact timeline
 func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDir, lang string) error {
-	entries, err := ParseSRT(srtPath)
+	entries, err := ParseSRT(srtPath, lang)
 	if err != nil || len(entries) == 0 {
 		return fmt.Errorf("failed to read SRT subtitle or empty file: %v", err)
 	}

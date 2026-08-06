@@ -1,8 +1,10 @@
 package media
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -52,6 +54,46 @@ type VideoInfo struct {
 	OriginalAudioIndices []int
 	OriginalSubIndices   []int
 	EmbeddedSubStreams   []EmbeddedSubInfo
+}
+
+// PromptUserSelectSub hiển thị danh sách subtitle nhúng và cho phép người dùng chọn bằng tay
+func PromptUserSelectSub(subs []EmbeddedSubInfo) *EmbeddedSubInfo {
+	if len(subs) == 0 {
+		fmt.Println("⚠️ File không chứa bất kỳ track subtitle nhúng nào.")
+		return nil
+	}
+
+	fmt.Println("\n==================================================")
+	fmt.Println("🔍 [INTERACTIVE MODE] Danh sách Subtitle nhúng trong phim:")
+	for i, sub := range subs {
+		title := sub.Title
+		if title == "" {
+			title = "<Không có tiêu đề>"
+		}
+		fmt.Printf("  [%d] Track Sub #%d | Ngôn ngữ: %s | Tiêu đề: %s\n", i+1, sub.SubIndex, sub.Language, title)
+	}
+	fmt.Println("  [0] Bỏ qua (Không sử dụng sub nhúng)")
+	fmt.Println("==================================================")
+
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("👉 Nhập số thứ tự track muốn dùng làm VietSub [0-", len(subs), "]: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		choice, err := strconv.Atoi(input)
+		if err == nil {
+			if choice == 0 {
+				return nil
+			}
+			if choice >= 1 && choice <= len(subs) {
+				selected := subs[choice-1]
+				fmt.Printf("✅ Đã chọn Track Sub #%d (%s)\n", selected.SubIndex, selected.Title)
+				return &selected
+			}
+		}
+		fmt.Println("❌ Lựa chọn không hợp lệ, vui lòng nhập lại.")
+	}
 }
 
 // normalizeLanguage inspects stream tags to identify Vietnamese ("vi") or English ("en")
