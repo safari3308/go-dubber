@@ -1,3 +1,3 @@
 module github.com/safari3308/go-dubber
 
-go 1.26.5
+go 1.26.1
