@@ -216,6 +216,12 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 }
 
 func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) {
+	// 🌟 LỚP BẢO VỆ 1: Kiểm tra Server TTS còn sống không trước khi làm bất cứ việc gì (tránh tải video NAS vô ích)
+	if err := api.CheckServerHealth(cfg); err != nil {
+		fmt.Printf("❌ [ABORT] Server TTS ngưng hoạt động: %v -> Bỏ qua video này!\n", err)
+		return
+	}
+
 	fmt.Printf("\n🎬 Inspecting: %s\n", filepath.Base(nasVideoPath))
 
 	// Timer init
@@ -365,14 +371,24 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	// ==========================================
 	// STEP 6: PARALLEL AI VOICE SYNTHESIS
 	// ==========================================
+	spinTTS := utils.StartSpinner("🎙️ Đang tạo giọng đọc AI (Kokoro TTS)...")
 	ttsStart := time.Now()
+
 	err = media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang)
 	if err != nil {
-		fmt.Printf("    ❌ AI Voice rendering failed: %v\n", err)
+		spinTTS.Stop(fmt.Sprintf("❌ AI Voice rendering failed: %v", err), true)
 		return
 	}
 	ttsDuration = time.Since(ttsStart)
-	fmt.Printf("    ✅ AI Voice rendering complete! (Duration: %s)\n", utils.FormatDuration(ttsDuration))
+
+	// 🌟 LỚP BẢO VỆ 3: Kiểm tra dung lượng file WAV đầu ra (Tránh trường hợp server trả về file 0 byte)
+	fi, err := os.Stat(localTtsWav)
+	if err != nil || fi.Size() == 0 {
+		spinTTS.Stop("❌ File âm thanh TTS rỗng (0 byte) hoặc không tồn tại -> Hủy Remux!", true)
+		return // 🔴 HỦY NGAY TẠI ĐÂY
+	}
+
+	spinTTS.Stop(fmt.Sprintf("✅ Tạo giọng đọc AI hoàn tất! (Thời gian: %s)", utils.FormatDuration(ttsDuration)), false)
 
 	// ==========================================
 	// STEP 7: REMUX / DECOUPLED VIDEO ENCODING

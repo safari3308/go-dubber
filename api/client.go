@@ -190,3 +190,25 @@ func RenderTTSFromServer(cfg *config.Config, subPath, outputWavPath, lang string
 	return err
 }
 
+// CheckServerHealth kiểm tra nhanh server TTS có khả dụng không
+func CheckServerHealth(cfg *config.Config) error {
+	client := &http.Client{Timeout: 3 * time.Second}
+	req, err := http.NewRequest("GET", cfg.ApiUrl+"/health", nil) // Hoặc endpoint ping bất kỳ
+	if err != nil {
+		return err
+	}
+	if cfg.ApiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.ApiToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("không thể kết nối tới TTS server: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("TTS server trả về status code: %d", resp.StatusCode)
+	}
+	return nil
+}
