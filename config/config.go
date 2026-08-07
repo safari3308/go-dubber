@@ -20,19 +20,20 @@ type FFmpegConfig struct {
 }
 
 type Config struct {
-	NasDir          string       `json:"nas_dir"`
-	ApiUrl          string       `json:"api_url"`
-	ApiToken        string       `json:"api_token"`
-	InteractiveMode bool         `json:"interactive_mode"`
-	DefaultSubIndex int          `json:"default_sub_index"`
-	SubLanguage     string       `json:"sub_language"`
-	UseGPU          bool         `json:"use_gpu"`
-	Workers         int          `json:"workers"`
-	ForceReprocess  bool         `json:"force_reprocess"`
-	SkipEncode      bool         `json:"skip_encode"`
-	OnlyCheckKokoro bool         `json:"only_check_kokoro"`
-	TTSSpeed        float64      `json:"tts_speed"`
-	FFmpeg          FFmpegConfig `json:"ffmpeg"`
+	NasDir             string       `json:"nas_dir"`
+	ApiUrl             string       `json:"api_url"`
+	ApiToken           string       `json:"api_token"`
+	ForceFallbackSub   bool         `json:"force_fallback_sub"`
+	InteractiveMode    bool         `json:"interactive_mode"`
+	DefaultSubIndex    int          `json:"default_sub_index"`
+	SubLanguage        string       `json:"sub_language"`
+	UseGPU             bool         `json:"use_gpu"`
+	Workers            int          `json:"workers"`
+	ForceReprocess     bool         `json:"force_reprocess"`
+	SkipEncode         bool         `json:"skip_encode"`
+	OnlyCheckKokoro    bool         `json:"only_check_kokoro"`
+	TTSSpeed           float64      `json:"tts_speed"`
+	FFmpeg             FFmpegConfig `json:"ffmpeg"`
 }
 
 func LoadConfig(path string) (*Config, error) {

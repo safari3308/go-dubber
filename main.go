@@ -111,6 +111,11 @@ func findExternalEnSubtitle(videoPath string) (string, bool) {
 }
 
 func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Config) SelectedSubtitle {
+	// Priority 0: force fallback sub
+	if cfg.ForceFallbackSub {
+		return fallbackEmbedSub(cfg, videoInfo)
+	}
+
 	// Priority 1: Embedded Vietnamese subtitle
 	for _, sub := range videoInfo.EmbeddedSubStreams {
 		if sub.Language == "vi" {
@@ -192,6 +197,10 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 	}
 
 	// Priority 5: Fallback to first available embedded subtitle stream
+	return fallbackEmbedSub(cfg, videoInfo)
+}
+
+func fallbackEmbedSub(cfg *config.Config, videoInfo *media.VideoInfo) SelectedSubtitle {
 	if len(videoInfo.EmbeddedSubStreams) > 0 {
 		if cfg.DefaultSubIndex >= len(videoInfo.EmbeddedSubStreams) {
 			fmt.Println("    ⚠️ Default subtitle index is out of range. Using first subtitle.")
@@ -211,7 +220,6 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 			Found:         true,
 		}
 	}
-
 	return SelectedSubtitle{Found: false}
 }
 
