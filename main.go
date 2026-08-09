@@ -382,7 +382,7 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	spinTTS := utils.StartSpinner("🎙️ Đang tạo giọng đọc AI (Kokoro TTS)...")
 	ttsStart := time.Now()
 
-	err = media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang)
+	err = media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang, videoInfo.Duration)
 	if err != nil {
 		spinTTS.Stop(fmt.Sprintf("❌ AI Voice rendering failed: %v", err), true)
 		return

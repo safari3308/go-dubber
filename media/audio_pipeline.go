@@ -320,11 +320,20 @@ func MixPCM16(canvas []byte, pcm []byte, startByte int) {
 }
 
 // ProcessDubbingPipeline renders dialogue lines in parallel and places them on exact timeline
-func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDir, lang string) error {
+func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDir, lang string, videoDuration float64) error {
 	entries, err := ParseSRT(srtPath, lang)
 	if err != nil || len(entries) == 0 {
 		return fmt.Errorf("failed to read SRT subtitle or empty file: %v", err)
 	}
+
+	// 🌟 LỚP BẢO VỆ 1: Lọc bỏ hoàn toàn các dòng sub nằm ngoài độ dài video (ví dụ: Sub Credit ở cuối)
+    var validEntries []SubEntry
+    for _, entry := range entries {
+        if entry.StartSec < videoDuration {
+            validEntries = append(validEntries, entry)
+        }
+    }
+    entries = validEntries
 
 	chunksDir := filepath.Join(localTempDir, "chunks_"+filepath.Base(outWavPath))
 	_ = os.MkdirAll(chunksDir, 0755)
@@ -376,8 +385,9 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 
 	fmt.Printf("\r    ✅ [100%%] Finished rendering %d lines! Packaging WAV payload...\n", totalEntries)
 
-	maxSec := entries[len(entries)-1].EndSec + 10.0
-	canvasBytes := make([]byte, int(maxSec*float64(sampleRate))*bytesPerSample)
+	// 🌟 LỚP BẢO VỆ 2: Khóa kích thước Canvas vừa khít 100% với Video Duration
+    // Không dùng entries[len-1].EndSec + 10 nữa!
+    canvasBytes := make([]byte, int(videoDuration*float64(sampleRate))*bytesPerSample)
 
 	for i, entry := range entries {
 		chunkFile := filepath.Join(chunksDir, fmt.Sprintf("chunk_%04d.wav", i))
@@ -430,11 +440,10 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		startByte := int(entry.StartSec*float64(sampleRate)) * bytesPerSample
 		endByte := startByte + len(pcmData)
 
-		if endByte > len(canvasBytes) {
-			newCanvas := make([]byte, endByte+24000)
-			copy(newCanvas, canvasBytes)
-			canvasBytes = newCanvas
-		}
+		// 🌟 LỚP BẢO VỆ 3: Cắt gọn PCM nếu đoạn thoại AI kéo dài vượt quá thời lượng phim
+        if endByte > len(canvasBytes) {
+            pcmData = pcmData[:len(canvasBytes)-startByte]
+        }
 
 		MixPCM16(canvasBytes, pcmData, startByte)
 	}

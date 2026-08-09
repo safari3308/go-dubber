@@ -20,6 +20,7 @@ type StreamInfo struct {
 	CodecName   string            `json:"codec_name"` // Codec identifier (hevc, h264...)
 	Width       int               `json:"width"`
 	BitRate     string            `json:"bit_rate"`
+	Duration    string            `json:"duration"`
 	Tags        map[string]string `json:"tags"`
 	Disposition DispositionInfo   `json:"disposition"`
 }
@@ -47,6 +48,7 @@ type VideoInfo struct {
 	IsAV1                bool   // true if video is already AV1
 	Width                int
 	Bitrate              int64  // bps
+	Duration             float64
 	IsWellCompressed     bool   // true if bitrate is already optimized for resolution
 	HasKokoroTrack       bool
 	HasGenericDubTrack   bool
@@ -250,6 +252,25 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			info.IsWellCompressed = true
 		} else if info.Width > 0 && info.Width < 1280 && bitrateKbps <= 800 {
 			info.IsWellCompressed = true
+		}
+	}
+
+	// 🌟 1. Lấy duration từ Container Format
+	if probe.Format.Duration != "" && probe.Format.Duration != "N/A" {
+		if dur, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && dur > 0 {
+			info.Duration = dur
+		}
+	}
+
+	// 🌟 2. FALLBACK: Nếu Container không có, quét qua các Stream (Video/Audio stream)
+	if info.Duration == 0 {
+		for _, s := range probe.Streams {
+			if s.Duration != "" && s.Duration != "N/A" {
+				if dur, err := strconv.ParseFloat(s.Duration, 64); err == nil && dur > 0 {
+					info.Duration = dur
+					break
+				}
+			}
 		}
 	}
 
