@@ -42,6 +42,12 @@ type EmbeddedSubInfo struct {
 	Title    string `json:"title"`
 }
 
+// Struct lưu vết thông tin từng Audio track trong file video
+type AudioStreamDetails struct {
+	AudioIndex int               // Relative index giữa các track audio (0, 1, 2...)
+	Tags       map[string]string
+}
+
 type VideoInfo struct {
 	VideoCodec           string // "hevc", "h264", "vp9", "av1"...
 	IsHEVC               bool   // true if video is already HEVC/H.265
@@ -54,8 +60,67 @@ type VideoInfo struct {
 	HasGenericDubTrack   bool
 	AudioTrackCount      int
 	OriginalAudioIndices []int
+	AudioStreams         []AudioStreamDetails // Danh sách chi tiết các track audio (dùng để trace ngôn ngữ gốc)
 	OriginalSubIndices   []int
 	EmbeddedSubStreams   []EmbeddedSubInfo
+}
+
+// 🌟 Hàm kiểm tra track audio có khớp ngôn ngữ yêu cầu hay không
+func matchLanguage(tags map[string]string, targetLang string) bool {
+	if tags == nil || targetLang == "" {
+		return false
+	}
+	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
+
+	for k, v := range tags {
+		lk := strings.ToLower(k)
+		lv := strings.ToLower(v)
+		if lk == "language" || lk == "lang" || lk == "title" {
+			if lv == targetLang || strings.HasPrefix(lv, targetLang) {
+				return true
+			}
+
+			// 🌟 Bổ sung mapping ISO cho Tiếng Trung, Nhật, Anh, Việt
+			isChinese := (targetLang == "cn" || targetLang == "zh" || targetLang == "chi" || targetLang == "zho") &&
+				(lv == "chi" || lv == "zho" || lv == "zh" || lv == "cn" || strings.Contains(lv, "chin"))
+			isJapanese := (targetLang == "ja" || targetLang == "jp") && (lv == "jpn" || strings.Contains(lv, "japan"))
+			isEnglish := (targetLang == "en") && (lv == "eng" || strings.Contains(lv, "english"))
+			isVietnamese := (targetLang == "vi") && (lv == "vie" || strings.Contains(lv, "viet"))
+
+			if isChinese || isJapanese || isEnglish || isVietnamese {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// 🌟 Hàm chọn Original Audio Index theo 3 tầng Fallback
+func (v *VideoInfo) SelectOriginalAudioIndex(targetLang string, defaultIndex int) int {
+	if v.AudioTrackCount == 0 {
+		return 0
+	}
+
+	// TẦNG 1: Tìm theo Ngôn ngữ yêu cầu (OriginalLanguage)
+	if targetLang != "" {
+		for _, stream := range v.AudioStreams {
+			if matchLanguage(stream.Tags, targetLang) {
+				fmt.Printf("    ✅ Đã tìm thấy Audio Track #%d khớp ngôn ngữ '%s'\n", stream.AudioIndex, targetLang)
+				return stream.AudioIndex
+			}
+		}
+		fmt.Printf("    ⚠️ Không tìm thấy Audio Track ngôn ngữ '%s'. Đang chuyển sang Fallback Index...\n", targetLang)
+	}
+
+	// TẦNG 2: Fallback về Audio Track Index được cấu hình (Nếu hợp lệ trong range)
+	if defaultIndex >= 0 && defaultIndex < v.AudioTrackCount {
+		fmt.Printf("    🔄 Sử dụng Fallback Audio Track Index: #%d\n", defaultIndex)
+		return defaultIndex
+	}
+
+	// TẦNG 3: Fallback về 0 nếu Index cấu hình nằm ngoài range
+	fmt.Printf("    ⚠️ Config OriginalAudioIndex (%d) nằm ngoài dải [0..%d]. Fallback về Audio Track #0\n", defaultIndex, v.AudioTrackCount-1)
+	return 0
 }
 
 // PromptUserSelectSub hiển thị danh sách subtitle nhúng và cho phép người dùng chọn bằng tay
@@ -200,6 +265,11 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			info.AudioTrackCount++
 			if !isKokoro {
 				info.OriginalAudioIndices = append(info.OriginalAudioIndices, audioStreamCounter)
+				// 🌟 Lưu chi tiết audio stream để dùng cho SelectOriginalAudioIndex
+				info.AudioStreams = append(info.AudioStreams, AudioStreamDetails{
+					AudioIndex: audioStreamCounter,
+					Tags:       s.Tags,
+				})
 			}
 			audioStreamCounter++
 		case "subtitle":

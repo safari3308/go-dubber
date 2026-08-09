@@ -360,7 +360,12 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		// 🌟 KỊCH BẢN 3: Dùng Sub ngoài + Video KHÔNG CÓ Sub nhúng nào
 		// Fallback: Mới phải Extract Audio để Sync với sóng âm
 		spinExt := utils.StartSpinner("⏱️ Trích xuất Anchor Audio để phục vụ Sync âm thanh...")
-		if err := media.ExtractAudioAnchor(localVideoPath, localAnchorAudio); err != nil {
+		// Lấy index track audio gốc chuẩn xác nhất theo config
+		targetAudioIndex := videoInfo.SelectOriginalAudioIndex(cfg.OriginalLanguage, cfg.OriginalAudioIndex)
+
+		// Sử dụng targetAudioIndex truyền vào lệnh FFmpeg (Ví dụ: 0:a:targetAudioIndex)
+		fmt.Printf("🎙️ Track audio gốc được chọn làm Input: 0:a:%d\n", targetAudioIndex)
+		if err := media.ExtractAudioAnchor(localVideoPath, localAnchorAudio, targetAudioIndex); err != nil {
 			spinExt.Stop(fmt.Sprintf("Trích xuất Anchor Audio thất bại: %v", err), true)
 		} else {
 			spinExt.Stop("Trích xuất Anchor Audio thành công!", false)
@@ -382,9 +387,9 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	spinTTS := utils.StartSpinner("🎙️ Đang tạo giọng đọc AI (Kokoro TTS)...")
 	ttsStart := time.Now()
 
-	err = media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang, videoInfo.Duration)
+	totalLines, err := media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang, videoInfo.Duration, spinTTS)
 	if err != nil {
-		spinTTS.Stop(fmt.Sprintf("❌ AI Voice rendering failed: %v", err), true)
+		spinTTS.Stop(fmt.Sprintf("AI Voice rendering failed: %v", err), true)
 		return
 	}
 	ttsDuration = time.Since(ttsStart)
@@ -392,18 +397,15 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	// 🌟 LỚP BẢO VỆ 3: Kiểm tra dung lượng file WAV đầu ra (Tránh trường hợp server trả về file 0 byte)
 	fi, err := os.Stat(localTtsWav)
 	if err != nil || fi.Size() == 0 {
-		spinTTS.Stop("❌ File âm thanh TTS rỗng (0 byte) hoặc không tồn tại -> Hủy Remux!", true)
+		spinTTS.Stop("File âm thanh TTS rỗng (0 byte) hoặc không tồn tại -> Hủy Remux!", true)
 		return // 🔴 HỦY NGAY TẠI ĐÂY
 	}
 
-	spinTTS.Stop(fmt.Sprintf("✅ Tạo giọng đọc AI hoàn tất! (Thời gian: %s)", utils.FormatDuration(ttsDuration)), false)
+	spinTTS.Stop(fmt.Sprintf("Tạo giọng đọc AI hoàn tất cho %d câu thoại! (Thời gian: %s)", totalLines, utils.FormatDuration(ttsDuration)), false)
 
 	// ==========================================
 	// STEP 7: REMUX / DECOUPLED VIDEO ENCODING
 	// ==========================================
-	spinRemux := utils.StartSpinner("🎜 Remuxing audio mix, embedding sub & processing video...")
-	remuxStart := time.Now()
-
 	if videoInfo.IsHEVC {
 		fmt.Println("    ⚡ HEVC/H.265 codec detected -> Enabling high-speed Copy Stream!")
 	} else if videoInfo.IsWellCompressed {
@@ -417,6 +419,9 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		}
 		fmt.Printf("    🎬 Bitrate unoptimized (%dp @ %d kbps) -> Transcoding via %s...\n", videoInfo.Width, bitrateKbps, encoderLabel)
 	}
+
+	spinRemux := utils.StartSpinner("🎜 Remuxing audio mix, embedding sub & processing video...")
+	remuxStart := time.Now()
 
 	err = media.RemuxVideo(cfg, localVideoPath, localTtsWav, finalSubPath, localOutVideo, videoInfo, isExternalSub, currentLang)
 	if err != nil {

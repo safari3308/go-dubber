@@ -62,12 +62,20 @@ func isAISubTrack(title string) bool {
 		strings.Contains(t, "synced")
 }
 
-func ExtractAudioAnchor(videoPath, outputPath string) error {
-	cmd := exec.Command("ffmpeg", "-y",
+func ExtractAudioAnchor(videoPath, outputPath string, audioIndex int) error {
+	mapArg := fmt.Sprintf("0:a:%d", audioIndex)
+
+	cmd := exec.Command("ffmpeg",
+		"-y",
 		"-i", videoPath,
-		"-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
+		"-map", mapArg,
+		"-vn",
+		"-ac", "1",
+		"-ar", "16000",
+		"-b:a", "32k",
 		outputPath,
 	)
+
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -111,12 +119,14 @@ func RemuxVideo(
 		audioBitrate = "192k"
 	}
 
-	// Áp dụng downmix và reset timestamp (asetpts=PTS-STARTPTS) bảo vệ tuyệt đối mốc 0:00
-	mixFilter := fmt.Sprintf(
-		"[0:a:0]aresample=48000:async=1,asetpts=PTS-STARTPTS,aformat=channel_layouts=stereo,volume=1.0[bg];"+
-			"[1:a]aresample=48000:async=1,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,volume=%s[tts];"+
-			"[bg][tts]amix=inputs=2:duration=first:dropout_transition=0,asetpts=PTS-STARTPTS[mix_layer]",
-		volBoost,
+	// 🌟 1. XÁC ĐỊNH TRACK AUDIO GỐC DÙNG LÀM TIẾNG NỀN (BACKGROUND AUDIO)
+	targetAudioIndex := info.SelectOriginalAudioIndex(cfg.OriginalLanguage, cfg.OriginalAudioIndex)
+
+	// 🌟 2. THAY [0:a:0] BẰNG [0:a:%d] VỚI targetAudioIndex
+	mixFilter := fmt.Sprintf("[0:a:%d]aresample=48000:async=1,asetpts=PTS-STARTPTS,aformat=channel_layouts=stereo,volume=1.0[bg];"+
+		"[1:a]aresample=48000:async=1,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,volume=%s[tts];"+
+		"[bg][tts]amix=inputs=2:duration=first:dropout_transition=0,asetpts=PTS-STARTPTS[mix_layer]",
+		targetAudioIndex, volBoost,
 	)
 
 	noBgAudioFilter := fmt.Sprintf(

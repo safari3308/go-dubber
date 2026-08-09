@@ -320,10 +320,10 @@ func MixPCM16(canvas []byte, pcm []byte, startByte int) {
 }
 
 // ProcessDubbingPipeline renders dialogue lines in parallel and places them on exact timeline
-func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDir, lang string, videoDuration float64) error {
+func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDir, lang string, videoDuration float64, spinner *utils.Spinner) (int, error) {
 	entries, err := ParseSRT(srtPath, lang)
 	if err != nil || len(entries) == 0 {
-		return fmt.Errorf("failed to read SRT subtitle or empty file: %v", err)
+		return 0, fmt.Errorf("failed to read SRT subtitle or empty file: %v", err)
 	}
 
 	// 🌟 LỚP BẢO VỆ 1: Lọc bỏ hoàn toàn các dòng sub nằm ngoài độ dài video (ví dụ: Sub Credit ở cuối)
@@ -355,6 +355,10 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 	var completedCount int32
 	var wg sync.WaitGroup
 
+	if spinner != nil {
+		spinner.UpdateMessage(fmt.Sprintf("🎙️ AI voice rendering [0/%d - 0.0%%] (%d workers)...", totalEntries, numWorkers))
+	}
+
 	for w := 1; w <= numWorkers; w++ {
 		wg.Add(1)
 		go func() {
@@ -372,7 +376,9 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 				}
 				current := atomic.AddInt32(&completedCount, 1)
 				percent := float64(current) / float64(totalEntries) * 100
-				fmt.Printf("\r    🎙️ [%d/%d - %.1f%%] AI voice rendering (%d workers)...          ", current, totalEntries, percent, numWorkers)
+				if spinner != nil {
+					spinner.UpdateMessage(fmt.Sprintf("🎙️ AI voice rendering [%d/%d - %.1f%%] (%d workers)...", current, totalEntries, percent, numWorkers))
+				}
 			}
 		}()
 	}
@@ -383,7 +389,9 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 	close(jobs)
 	wg.Wait()
 
-	fmt.Printf("\r    ✅ [100%%] Finished rendering %d lines! Packaging WAV payload...\n", totalEntries)
+	if spinner != nil {
+		spinner.UpdateMessage(fmt.Sprintf("📦 Packaging WAV payload (%d lines)...", totalEntries))
+	}
 
 	// 🌟 LỚP BẢO VỆ 2: Khóa kích thước Canvas vừa khít 100% với Video Duration
     // Không dùng entries[len-1].EndSec + 10 nữa!
@@ -453,7 +461,7 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 
 	err = os.WriteFile(outWavPath, finalWav, 0644)
 	_ = os.RemoveAll(chunksDir)
-	return err
+	return totalEntries, err
 }
 
 func adjustChunkSpeed(inputWavPath string, speedup float64) ([]byte, error) {

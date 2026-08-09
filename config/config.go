@@ -27,6 +27,8 @@ type Config struct {
 	InteractiveMode    bool         `json:"interactive_mode"`
 	DefaultSubIndex    int          `json:"default_sub_index"`
 	SubLanguage        string       `json:"sub_language"`
+	OriginalLanguage   string       `json:"original_language"` // Ví dụ: "ja", "en", "vi" (Mã ngôn ngữ gốc cần lấy)
+	OriginalAudioIndex int          `json:"original_audio_index"` // Index dự phòng nếu không tìm thấy ngôn ngữ (Mặc định: 0)
 	UseGPU             bool         `json:"use_gpu"`
 	Workers            int          `json:"workers"`
 	ForceReprocess     bool         `json:"force_reprocess"`
