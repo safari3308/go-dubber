@@ -70,7 +70,7 @@ func CleanDialogueLine(textLine string, lang string) string {
 	clean := reASS.ReplaceAllString(textLine, "")
 	clean = reHTML.ReplaceAllString(clean, "")
 
-	// 💡 Giữ lại nội dung bên trong (), [], chỉ bỏ dấu ngoặc (vd: "(Tập 53)" -> "Tập 53")
+	// Keep content inside (), [], just remove the brackets (e.g., "(Tập 53)" -> "Tập 53")
 	clean = strings.ReplaceAll(clean, "(", " ")
 	clean = strings.ReplaceAll(clean, ")", " ")
 	clean = strings.ReplaceAll(clean, "[", " ")
@@ -115,7 +115,7 @@ func CleanDialogueLine(textLine string, lang string) string {
 	// 🌟 4.5. Process collapse repeated characters
 	clean = collapseRepeatedChars(clean)
 
-	// 🌟 4.6. Chuyển đổi số thành chữ tiếng Việt (Được gọi sau khi đã lọc HTML sạch sẽ)
+	// 🌟 4.6. Convert numbers to Vietnamese text (Called after HTML filtering)
 	normLang := strings.ToLower(strings.TrimSpace(lang))
 	if normLang == "vi" || normLang == "vie" || normLang == "vn" || normLang == "vietnamese" {
 		clean = utils.NormalizeVietnameseTextReplaceNumbers(clean)
@@ -149,7 +149,7 @@ func CleanDialogueLine(textLine string, lang string) string {
 		clean = string(runes)
 	}
 
-	// Bên trong CleanDialogueLine
+	// Inside CleanDialogueLine
 	clean = StripFontTags(clean)
 
 	return clean
@@ -228,11 +228,11 @@ func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
 	return entries, nil
 }
 func StripFontTags(text string) string {
-    // 1. Xóa thẻ <font ...> và </font> (không phân biệt hoa thường)
+    // 1. Remove <font ...> and </font> (case-insensitive)
     reFont := regexp.MustCompile(`(?i)</?font[^>]*>`)
     text = reFont.ReplaceAllString(text, "")
 
-    // 2. Xóa các thuộc tính size/fs nếu còn sót lại dạng ASS override {\fs20}
+    // 2. Remove size/fs attributes if any remain in ASS override {\fs20}
     reFS := regexp.MustCompile(`(?i)\{\\fs\d+\}`)
     text = reFS.ReplaceAllString(text, "")
 
@@ -251,7 +251,7 @@ func srtTimeToSeconds(timeStr string) float64 {
 	return h*3600 + m*60 + s
 }
 
-// ExtractPCMFromWAV tìm vị trí chunk 'data' chuẩn xác trong file WAV (xử lý mọi độ dài Header)
+// ExtractPCMFromWAV finds the exact position of the 'data' chunk in WAV (handles any Header length)
 func ExtractPCMFromWAV(wavData []byte) []byte {
 	dataIdx := bytes.Index(wavData, []byte("data"))
 	if dataIdx == -1 || len(wavData) < dataIdx+8 {
@@ -260,7 +260,7 @@ func ExtractPCMFromWAV(wavData []byte) []byte {
 		}
 		return nil
 	}
-	// 'data' tag (4 bytes) + chunk size (4 bytes) -> Dữ liệu PCM nằm từ byte (dataIdx + 8)
+	// 'data' tag (4 bytes) + chunk size (4 bytes) -> PCM data starts from byte (dataIdx + 8)
 	return wavData[dataIdx+8:]
 }
 
@@ -269,7 +269,7 @@ func TrimSilencePCM16(pcm []byte, threshold int16) []byte {
 	if len(pcm) < 4 {
 		return pcm
 	}
-	// Ép số lượng byte phải chia hết cho 2 để chuẩn hóa 16-bit sample
+	// Ensure byte count is divisible by 2 for 16-bit sample standardization
 	end := len(pcm) - (len(pcm) % 2)
 	start := 0
 
@@ -297,7 +297,7 @@ func TrimSilencePCM16(pcm []byte, threshold int16) []byte {
 
 // MixPCM16 mixes PCM 16-bit audio samples onto canvas buffer
 func MixPCM16(canvas []byte, pcm []byte, startByte int) {
-	// Đảm bảo startByte chia hết cho 2
+	// Ensure startByte is divisible by 2
 	if startByte%2 != 0 {
 		startByte--
 	}
@@ -326,7 +326,7 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		return 0, fmt.Errorf("failed to read SRT subtitle or empty file: %v", err)
 	}
 
-	// 🌟 LỚP BẢO VỆ 1: Lọc bỏ hoàn toàn các dòng sub nằm ngoài độ dài video (ví dụ: Sub Credit ở cuối)
+	// 🌟 PROTECTION LAYER 1: Remove ALL subtitle lines outside video duration (e.g., Credit subs at the end)
     var validEntries []SubEntry
     for _, entry := range entries {
         if entry.StartSec < videoDuration {
@@ -393,8 +393,8 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		spinner.UpdateMessage(fmt.Sprintf("📦 Packaging WAV payload (%d lines)...", totalEntries))
 	}
 
-	// 🌟 LỚP BẢO VỆ 2: Khóa kích thước Canvas vừa khít 100% với Video Duration
-    // Không dùng entries[len-1].EndSec + 10 nữa!
+	// 🌟 PROTECTION LAYER 2: Fixed Canvas Size (100% match with Video Duration)
+    // NO MORE entries[len-1].EndSec + 10!
     canvasBytes := make([]byte, int(videoDuration*float64(sampleRate))*bytesPerSample)
 
 	for i, entry := range entries {
@@ -404,7 +404,7 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 			continue
 		}
 
-		// 🌟 Dùng ExtractPCMFromWAV thay cho wavData[44:] để lấy đúng PCM payload
+		// 🌟 Use ExtractPCMFromWAV instead of wavData[44:] to get correct PCM payload
 		pcmData := ExtractPCMFromWAV(wavData)
 		if len(pcmData) == 0 {
 			continue
@@ -435,7 +435,7 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 			}
 			if speedup >= 1.05 {
 				if respeededWav, err := adjustChunkSpeed(chunkFile, speedup); err == nil {
-					// 🌟 Bóc tách PCM từ file respeeded của FFmpeg bằng ExtractPCMFromWAV
+					// 🌟 Extract PCM from FFmpeg's respeeded file using ExtractPCMFromWAV
 					respeededPcm := ExtractPCMFromWAV(respeededWav)
 					respeededPcm = TrimSilencePCM16(respeededPcm, 300)
 					if len(respeededPcm) > 0 {
@@ -448,7 +448,7 @@ func ProcessDubbingPipeline(cfg *config.Config, srtPath, outWavPath, localTempDi
 		startByte := int(entry.StartSec*float64(sampleRate)) * bytesPerSample
 		endByte := startByte + len(pcmData)
 
-		// 🌟 LỚP BẢO VỆ 3: Cắt gọn PCM nếu đoạn thoại AI kéo dài vượt quá thời lượng phim
+		// 🌟 PROTECTION LAYER 3: Truncate PCM if AI dialogue extends beyond video duration
         if endByte > len(canvasBytes) {
             pcmData = pcmData[:len(canvasBytes)-startByte]
         }

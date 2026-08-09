@@ -42,9 +42,9 @@ type EmbeddedSubInfo struct {
 	Title    string `json:"title"`
 }
 
-// Struct lưu vết thông tin từng Audio track trong file video
+// Store original audio track information
 type AudioStreamDetails struct {
-	AudioIndex int               // Relative index giữa các track audio (0, 1, 2...)
+	AudioIndex int               // Relative index between audio tracks (0, 1, 2...)
 	Tags       map[string]string
 }
 
@@ -60,12 +60,12 @@ type VideoInfo struct {
 	HasGenericDubTrack   bool
 	AudioTrackCount      int
 	OriginalAudioIndices []int
-	AudioStreams         []AudioStreamDetails // Danh sách chi tiết các track audio (dùng để trace ngôn ngữ gốc)
+	AudioStreams         []AudioStreamDetails // List of original audio tracks (used to trace source language)
 	OriginalSubIndices   []int
 	EmbeddedSubStreams   []EmbeddedSubInfo
 }
 
-// 🌟 Hàm kiểm tra track audio có khớp ngôn ngữ yêu cầu hay không
+// 🌟 Function to check if audio track matches the required language
 func matchLanguage(tags map[string]string, targetLang string) bool {
 	if tags == nil || targetLang == "" {
 		return false
@@ -80,7 +80,7 @@ func matchLanguage(tags map[string]string, targetLang string) bool {
 				return true
 			}
 
-			// 🌟 Bổ sung mapping ISO cho Tiếng Trung, Nhật, Anh, Việt
+			// 🌟 Added ISO mapping for Chinese, Japanese, English, Vietnamese
 			isChinese := (targetLang == "cn" || targetLang == "zh" || targetLang == "chi" || targetLang == "zho") &&
 				(lv == "chi" || lv == "zho" || lv == "zh" || lv == "cn" || strings.Contains(lv, "chin"))
 			isJapanese := (targetLang == "ja" || targetLang == "jp") && (lv == "jpn" || strings.Contains(lv, "japan"))
@@ -95,56 +95,56 @@ func matchLanguage(tags map[string]string, targetLang string) bool {
 	return false
 }
 
-// 🌟 Hàm chọn Original Audio Index theo 3 tầng Fallback
+// 🌟 Function to select original audio index using 3-tier fallback
 func (v *VideoInfo) SelectOriginalAudioIndex(targetLang string, defaultIndex int) int {
 	if v.AudioTrackCount == 0 {
 		return 0
 	}
 
-	// TẦNG 1: Tìm theo Ngôn ngữ yêu cầu (OriginalLanguage)
+	// Tier 1: Find by required language (OriginalLanguage)
 	if targetLang != "" {
 		for _, stream := range v.AudioStreams {
 			if matchLanguage(stream.Tags, targetLang) {
-				fmt.Printf("    ✅ Đã tìm thấy Audio Track #%d khớp ngôn ngữ '%s'\n", stream.AudioIndex, targetLang)
+				fmt.Printf("    ✅ Found Audio Track #%d matching language '%s'\n", stream.AudioIndex, targetLang)
 				return stream.AudioIndex
 			}
 		}
-		fmt.Printf("    ⚠️ Không tìm thấy Audio Track ngôn ngữ '%s'. Đang chuyển sang Fallback Index...\n", targetLang)
+		fmt.Printf("    ⚠️ Not found Audio Track '%s'. Moving to Fallback Index...\n", targetLang)
 	}
 
-	// TẦNG 2: Fallback về Audio Track Index được cấu hình (Nếu hợp lệ trong range)
+	// Tier 2: Fallback to configured Audio Track Index (If valid within range)
 	if defaultIndex >= 0 && defaultIndex < v.AudioTrackCount {
-		fmt.Printf("    🔄 Sử dụng Fallback Audio Track Index: #%d\n", defaultIndex)
+		fmt.Printf("    🔄 Using Fallback Audio Track Index: #%d\n", defaultIndex)
 		return defaultIndex
 	}
 
-	// TẦNG 3: Fallback về 0 nếu Index cấu hình nằm ngoài range
-	fmt.Printf("    ⚠️ Config OriginalAudioIndex (%d) nằm ngoài dải [0..%d]. Fallback về Audio Track #0\n", defaultIndex, v.AudioTrackCount-1)
+	// Tier 3: Fallback to 0 if configured Index is out of range
+	fmt.Printf("    ⚠️ Config OriginalAudioIndex (%d) is out of range [0..%d]. Fallback to Audio Track #0\n", defaultIndex, v.AudioTrackCount-1)
 	return 0
 }
 
-// PromptUserSelectSub hiển thị danh sách subtitle nhúng và cho phép người dùng chọn bằng tay
+// PromptUserSelectSub displays a list of embedded subtitles and allows users to select manually
 func PromptUserSelectSub(subs []EmbeddedSubInfo) *EmbeddedSubInfo {
 	if len(subs) == 0 {
-		fmt.Println("⚠️ File không chứa bất kỳ track subtitle nhúng nào.")
+		fmt.Println("⚠️ File does not contain any embedded subtitle tracks.")
 		return nil
 	}
 
 	fmt.Println("\n==================================================")
-	fmt.Println("🔍 [INTERACTIVE MODE] Danh sách Subtitle nhúng trong phim:")
+	fmt.Println("🔍 [INTERACTIVE MODE] List of embedded subtitles:")
 	for i, sub := range subs {
 		title := sub.Title
 		if title == "" {
-			title = "<Không có tiêu đề>"
+			title = "<No title>"
 		}
-		fmt.Printf("  [%d] Track Sub #%d | Ngôn ngữ: %s | Tiêu đề: %s\n", i+1, sub.SubIndex, sub.Language, title)
+		fmt.Printf("  [%d] Track Sub #%d | Language: %s | Title: %s\n", i+1, sub.SubIndex, sub.Language, title)
 	}
-	fmt.Println("  [0] Bỏ qua (Không sử dụng sub nhúng)")
+	fmt.Println("  [0] Skip (Do not use embedded sub)")
 	fmt.Println("==================================================")
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("👉 Nhập số thứ tự track muốn dùng làm VietSub [0-", len(subs), "]: ")
+		fmt.Print("👉 Enter the track number you want to use as VietSub [0-", len(subs), "]: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
@@ -155,11 +155,11 @@ func PromptUserSelectSub(subs []EmbeddedSubInfo) *EmbeddedSubInfo {
 			}
 			if choice >= 1 && choice <= len(subs) {
 				selected := subs[choice-1]
-				fmt.Printf("✅ Đã chọn Track Sub #%d (%s)\n", selected.SubIndex, selected.Title)
+				fmt.Printf("✅ Selected Track Sub #%d (%s)\n", selected.SubIndex, selected.Title)
 				return &selected
 			}
 		}
-		fmt.Println("❌ Lựa chọn không hợp lệ, vui lòng nhập lại.")
+		fmt.Println("❌ Invalid choice, please try again.")
 	}
 }
 
@@ -265,7 +265,7 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			info.AudioTrackCount++
 			if !isKokoro {
 				info.OriginalAudioIndices = append(info.OriginalAudioIndices, audioStreamCounter)
-				// 🌟 Lưu chi tiết audio stream để dùng cho SelectOriginalAudioIndex
+				// 🌟 Store audio stream details for SelectOriginalAudioIndex
 				info.AudioStreams = append(info.AudioStreams, AudioStreamDetails{
 					AudioIndex: audioStreamCounter,
 					Tags:       s.Tags,
@@ -325,14 +325,14 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 		}
 	}
 
-	// 🌟 1. Lấy duration từ Container Format
+	// 🌟 1. Get duration from Container Format
 	if probe.Format.Duration != "" && probe.Format.Duration != "N/A" {
 		if dur, err := strconv.ParseFloat(probe.Format.Duration, 64); err == nil && dur > 0 {
 			info.Duration = dur
 		}
 	}
 
-	// 🌟 2. FALLBACK: Nếu Container không có, quét qua các Stream (Video/Audio stream)
+	// 🌟 2. FALLBACK: If Container doesn't have, scan through Streams (Video/Audio stream)
 	if info.Duration == 0 {
 		for _, s := range probe.Streams {
 			if s.Duration != "" && s.Duration != "N/A" {

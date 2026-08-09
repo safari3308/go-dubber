@@ -96,7 +96,7 @@ func RemuxVideo(
 ) error {
 	normLang := strings.ToLower(strings.TrimSpace(lang))
 	trackLang := "vie"
-	// 🌟 Đặt nhãn chứa "AI Synced" để FFmpeg dễ dàng nhận diện và loại bỏ ở lần force sau
+	// 🌟 Name subtitles to avoid conflicts with original subtitles
 	subTitle := "Vietnamese (AI Synced)"
 	if normLang == "en" || normLang == "eng" || normLang == "english" {
 		trackLang = "eng"
@@ -106,7 +106,7 @@ func RemuxVideo(
 	streams, _ := inspectStreams(videoPath)
 
 	// =========================================================================
-	// PASS 1: HÒA ÂM CHUẨN KÈM RESET MỐC THỜI GIAN
+	// PASS 1: Resample & Mix Audio
 	// =========================================================================
 
 	volBoost := cfg.FFmpeg.VolumeBoost
@@ -119,10 +119,10 @@ func RemuxVideo(
 		audioBitrate = "192k"
 	}
 
-	// 🌟 1. XÁC ĐỊNH TRACK AUDIO GỐC DÙNG LÀM TIẾNG NỀN (BACKGROUND AUDIO)
+	// 🌟 1. Identify original audio track to use as background audio
 	targetAudioIndex := info.SelectOriginalAudioIndex(cfg.OriginalLanguage, cfg.OriginalAudioIndex)
 
-	// 🌟 2. THAY [0:a:0] BẰNG [0:a:%d] VỚI targetAudioIndex
+	// 🌟 2. Replace [0:a:0] with [0:a:%d] using targetAudioIndex
 	mixFilter := fmt.Sprintf("[0:a:%d]aresample=48000:async=1,asetpts=PTS-STARTPTS,aformat=channel_layouts=stereo,volume=1.0[bg];"+
 		"[1:a]aresample=48000:async=1,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,volume=%s[tts];"+
 		"[bg][tts]amix=inputs=2:duration=first:dropout_transition=0,asetpts=PTS-STARTPTS[mix_layer]",
@@ -162,13 +162,13 @@ func RemuxVideo(
 	}
 
 	// =========================================================================
-	// PASS 2: MUX VIDEO KÈM FLAG BẢO VỆ INTERLEAVE VÀ TIMESTAMP MKV
+	// PASS 2: MUX VIDEO, STREAM COPY AUDIO & EMBED SUBTITLE
 	// =========================================================================
 	hasSubInput := subPath != "" && utils.FileExists(subPath)
 
 	var ffmpegArgs []string
 	
-	// Khởi tạo lệnh với -y và -fflags +genpts để chuẩn hóa lại timestamp gốc bị lỗi (nếu có)
+	// Initialize command with -y and -fflags +genpts to normalize original timestamps
 	ffmpegArgs = append(ffmpegArgs, "-y", "-fflags", "+genpts")
 
 	if hasSubInput {
@@ -177,13 +177,13 @@ func RemuxVideo(
 		ffmpegArgs = append(ffmpegArgs, "-i", videoPath, "-i", tempMixedAudio)
 	}
 
-	// 🌟 FIX 2: Ngăn FFmpeg bỏ qua timestamp âm nếu video bị xén cắt trước đó
+	// 🌟 FIX 2: Prevent FFmpeg from ignoring negative timestamps if video was previously cut
 	ffmpegArgs = append(ffmpegArgs, "-avoid_negative_ts", "make_zero")
 
 	// 1. Map Video
 	ffmpegArgs = append(ffmpegArgs, "-map", "0:v:0")
 
-	// 2. Map Audio Streams: Giữ âm thanh gốc, LOẠI BỎ TẤT CẢ các track AI đã tạo
+	// 2. Map Audio Streams: Keep original audio, REMOVE ALL created AI tracks
 	keptAudioCount := 0
 	if len(streams) > 0 {
 		for _, st := range streams {
@@ -199,7 +199,7 @@ func RemuxVideo(
 		keptAudioCount = 1
 	}
 
-	// Nạp Track AI Mới
+	// Add New AI Track
 	ffmpegArgs = append(ffmpegArgs, "-map", "1:a:0")
 	newAudioIndex := keptAudioCount
 
@@ -226,13 +226,13 @@ func RemuxVideo(
 	// 4. Map Fonts/Attachments
 	ffmpegArgs = append(ffmpegArgs, "-map", "0:t?")
 
-	// Đặt Default Track
+	// 🌟 Set Default Track
 	ffmpegArgs = append(ffmpegArgs,
 		"-disposition:a", "0",
 		fmt.Sprintf("-disposition:a:%d", newAudioIndex), "default",
 	)
 
-	// Cấu hình Codec Video
+	// Configure Video Codec
 	if cfg.SkipEncode || info.IsHEVC || info.IsAV1 || info.IsWellCompressed {
 		ffmpegArgs = append(ffmpegArgs, "-c:v", "copy")
 	} else if cfg.UseGPU {
@@ -288,7 +288,7 @@ func RemuxVideo(
 		)
 	}
 
-	// Cấu hình Codec Audio
+	// Configure Audio Codec
 	ffmpegArgs = append(ffmpegArgs, "-c:a", "copy")
 	ffmpegArgs = append(ffmpegArgs,
 		fmt.Sprintf("-c:a:%d", newAudioIndex), "aac",
@@ -310,10 +310,10 @@ func RemuxVideo(
 		)
 	}
 
-	// 🌟 FIX 1: Chống lỗi Muxer Interleave Delta - Ép FFmpeg buffer RAM vô hạn khi map nhiều nguồn file khác nhau
+	// 🌟 FIX 1: Prevent Muxer Interleave Delta Error - Force FFmpeg to use infinite RAM buffer when mapping multiple source files
 	ffmpegArgs = append(ffmpegArgs, "-max_interleave_delta", "0")
 
-	// Đích ra
+	// Output to temp path
 	ffmpegArgs = append(ffmpegArgs, outTempPath)
 
 	cmdVideo := exec.Command("ffmpeg", ffmpegArgs...)
@@ -321,7 +321,7 @@ func RemuxVideo(
 	cmdVideo.Stderr = &stderrVideo
 
 	if err := cmdVideo.Run(); err != nil {
-		fmt.Printf("\n❌ [PASS 2 MUX ERROR] Chi tiết lỗi:\n%s\n", stderrVideo.String())
+		fmt.Printf("\n❌ [PASS 2 MUX ERROR] Error details:\n%s\n", stderrVideo.String())
 		return fmt.Errorf("video processing error (Pass 2): %v", err)
 	}
 

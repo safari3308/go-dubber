@@ -169,7 +169,7 @@ func SafeReplaceOnNAS(srcLocal, dstNAS string) error {
 
 var ones = []string{"không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"}
 
-// NumberToVietnameseWords chuyển đổi số int64 bất kỳ thành chữ tiếng Việt
+// NumberToVietnameseWords convert int64 to Vietnamese words
 func NumberToVietnameseWords(n int64) string {
 	if n == 0 {
 		return "không"
@@ -185,7 +185,7 @@ func readThreeDigitsGroup(n int64, hasHigherGroup bool) string {
 		return ""
 	}
 
-	// 1. Hàng Tỷ (>= 1.000.000.000)
+	// Billions (>= 1,000,000,000)
 	if n >= 1000000000 {
 		ty := n / 1000000000
 		rem := n % 1000000000
@@ -196,7 +196,7 @@ func readThreeDigitsGroup(n int64, hasHigherGroup bool) string {
 		return res
 	}
 
-	// 2. Hàng Triệu (>= 1.000.000)
+	// Millions (>= 1,000,000)
 	if n >= 1000000 {
 		trieu := n / 1000000
 		rem := n % 1000000
@@ -207,7 +207,7 @@ func readThreeDigitsGroup(n int64, hasHigherGroup bool) string {
 		return res
 	}
 
-	// 🌟 3. Hàng Nghìn (>= 1.000) - SỬA LỖI: Chia đúng 1000
+	// Thousands (>= 1.000)
 	if n >= 1000 {
 		nghin := n / 1000
 		rem := n % 1000
@@ -218,7 +218,7 @@ func readThreeDigitsGroup(n int64, hasHigherGroup bool) string {
 		return res
 	}
 
-	// 4. Hàng Trăm, Chục, Đơn vị (< 1000)
+	// Hundreds, Tens, Units (< 1000)
 	hundred := n / 100
 	rem := n % 100
 
@@ -259,7 +259,7 @@ func readThreeDigitsGroup(n int64, hasHigherGroup bool) string {
 	return strings.Join(parts, " ")
 }
 
-// DigitsToVietnameseWords đọc từng chữ số (cho mã code/tập phim 01)
+// DigitsToVietnameseWords read each digit (for code/episode 01)
 func DigitsToVietnameseWords(digits string) string {
 	var words []string
 	for _, ch := range digits {
@@ -270,13 +270,13 @@ func DigitsToVietnameseWords(digits string) string {
 	return strings.Join(words, " ")
 }
 
-// NormalizeVietnameseTextReplaceNumbers quét và thay thế số thông minh
+// NormalizeVietnameseTextReplaceNumbers scan and replace numbers intelligently
 func NormalizeVietnameseTextReplaceNumbers(text string) string {
-	// Xóa dấu chấm/phẩy phân cách hàng ngàn dạng "1.000" hoặc "2,000"
+	// Remove thousands separators 
 	reFormattedNum := regexp.MustCompile(`\b(\d{1,3})[.,](\d{3})\b`)
 	text = reFormattedNum.ReplaceAllString(text, "$1$2")
 
-	// 1. Mã dính liền chữ + số (H10, S01E02, 1080p)
+	// 1. Alphanumeric (H10, S01E02, 1080p)
 	reAlphanumeric := regexp.MustCompile(`(?i)\b([a-z]+)(\d+)\b|\b(\d+)([a-z]+)\b`)
 	text = reAlphanumeric.ReplaceAllStringFunc(text, func(match string) string {
 		reDigit := regexp.MustCompile(`\d+`)
@@ -285,14 +285,14 @@ func NormalizeVietnameseTextReplaceNumbers(text string) string {
 		})
 	})
 
-	// 2. Chuyển đổi các số còn lại
+	// 2. Convert remaining numbers
 	reNum := regexp.MustCompile(`\d+`)
 	return reNum.ReplaceAllStringFunc(text, func(match string) string {
-		// Số có số 0 ở đầu (01, 007) -> Đọc từng số
+		// Leading zeros (01, 007) -> Read digit by digit
 		if len(match) > 1 && strings.HasPrefix(match, "0") {
 			return DigitsToVietnameseWords(match)
 		}
-		// Chuỗi số quá dài (> 10 số) -> Đọc từng số
+		// Too long number (> 10 digits) -> Read digit by digit
 		if len(match) > 10 {
 			return DigitsToVietnameseWords(match)
 		}
