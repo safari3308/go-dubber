@@ -356,6 +356,8 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 			}
 		}
 
+	} else if cfg.SkipSubSync {
+		fmt.Println("ℹ️ [SYNC] Skipping sync because SkipSubSync is enabled.")
 	} else {
 		// 🌟 CASE 3: Use external subtitle + Video HAS NO embedded subtitle
 		// Fallback: Must extract audio to sync with sound waves

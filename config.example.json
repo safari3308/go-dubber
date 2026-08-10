@@ -6,7 +6,8 @@
   "workers": 2,
   "force_reprocess": false,
   "skip_encode": false,
-  "only_check_kokoro": false,
+  "skip_sub_sync": false,
+  "ai_track_as_first_track": false,
   "tts_speed": 1.1,
   "ffmpeg": {
     "gpu_codec": "hevc_nvenc",

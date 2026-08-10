@@ -36,6 +36,8 @@ type Config struct {
 	OnlyCheckKokoro    bool         `json:"only_check_kokoro"`
 	TTSSpeed           float64      `json:"tts_speed"`
 	FFmpeg             FFmpegConfig `json:"ffmpeg"`
+	SkipSubSync        bool         `json:"skip_sub_sync"`
+	AITrackAsFirstTrack bool        `json:"ai_track_as_first_track"`
 }
 
 func LoadConfig(path string) (*Config, error) {

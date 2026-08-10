@@ -183,25 +183,52 @@ func RemuxVideo(
 	// 1. Map Video
 	ffmpegArgs = append(ffmpegArgs, "-map", "0:v:0")
 
-	// 2. Map Audio Streams: Keep original audio, REMOVE ALL created AI tracks
+	// 2. Map Audio Streams
+	// Check if AI track should be placed as Track #0 (for demo/screen recording videos or when configured)
+	aiAsFirstTrack := cfg.AITrackAsFirstTrack ||
+		strings.Contains(strings.ToLower(videoPath), "demo") ||
+		info.AudioTrackCount == 0
+
 	keptAudioCount := 0
-	if len(streams) > 0 {
-		for _, st := range streams {
-			if st.CodecType == "audio" {
-				if !isAITrack(st.Tags.Title) {
-					ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
-					keptAudioCount++
+	newAudioIndex := 0
+
+	if aiAsFirstTrack {
+		// Place NEW AI track as Track #0 (e.g. for demo / screen recording videos)
+		ffmpegArgs = append(ffmpegArgs, "-map", "1:a:0")
+		newAudioIndex = 0
+
+		if len(streams) > 0 {
+			for _, st := range streams {
+				if st.CodecType == "audio" {
+					if !isAITrack(st.Tags.Title) {
+						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
+						keptAudioCount++
+					}
 				}
 			}
+		} else if info.AudioTrackCount > 0 {
+			ffmpegArgs = append(ffmpegArgs, "-map", "0:a:0")
+			keptAudioCount = 1
 		}
-	} else if info.AudioTrackCount > 0 {
-		ffmpegArgs = append(ffmpegArgs, "-map", "0:a:0")
-		keptAudioCount = 1
-	}
+	} else {
+		// Normal AI Dubbing: Map original audio streams first, AI track as secondary default track
+		if len(streams) > 0 {
+			for _, st := range streams {
+				if st.CodecType == "audio" {
+					if !isAITrack(st.Tags.Title) {
+						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
+						keptAudioCount++
+					}
+				}
+			}
+		} else if info.AudioTrackCount > 0 {
+			ffmpegArgs = append(ffmpegArgs, "-map", "0:a:0")
+			keptAudioCount = 1
+		}
 
-	// Add New AI Track
-	ffmpegArgs = append(ffmpegArgs, "-map", "1:a:0")
-	newAudioIndex := keptAudioCount
+		ffmpegArgs = append(ffmpegArgs, "-map", "1:a:0")
+		newAudioIndex = keptAudioCount
+	}
 
 	// 3. Map Subtitles
 	keptSubCount := 0
@@ -289,11 +316,17 @@ func RemuxVideo(
 	}
 
 	// Configure Audio Codec
+	subCodec := "copy"
+	ext := strings.ToLower(filepath.Ext(outTempPath))
+	if ext == ".mp4" || ext == ".mov" || ext == ".m4v" {
+		subCodec = "mov_text"
+	}
+
 	ffmpegArgs = append(ffmpegArgs, "-c:a", "copy")
 	ffmpegArgs = append(ffmpegArgs,
 		fmt.Sprintf("-c:a:%d", newAudioIndex), "aac",
 		fmt.Sprintf("-b:a:%d", newAudioIndex), audioBitrate,
-		"-c:s", "copy",
+		"-c:s", subCodec,
 	)
 
 	// Metadata
