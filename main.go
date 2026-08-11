@@ -14,6 +14,16 @@ import (
 	"github.com/safari3308/go-dubber/utils"
 )
 
+func isSupportedVideoExtension(ext string) bool {
+	ext = strings.ToLower(ext)
+	switch ext {
+	case ".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".flv", ".wmv", ".ts", ".mts", ".m2ts":
+		return true
+	default:
+		return false
+	}
+}
+
 func main() {
 	cfg, err := config.LoadConfig("config.json")
 	if err != nil {
@@ -39,7 +49,7 @@ func main() {
 		}
 
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext == ".mp4" || ext == ".mkv" || ext == ".avi" {
+		if isSupportedVideoExtension(ext) {
 			if strings.HasPrefix(filepath.Base(path), "temp_") {
 				return nil
 			}
@@ -116,9 +126,13 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 		return fallbackEmbedSub(cfg, videoInfo)
 	}
 
-	// Priority 1: Embedded Vietnamese subtitle
+	// Priority 1: Embedded Vietnamese text subtitle
 	for _, sub := range videoInfo.EmbeddedSubStreams {
 		if sub.Language == "vi" {
+			if sub.IsBitmap {
+				fmt.Printf("    ⚠️ Skipping embedded Vietnamese subtitle track #%d (%s): Bitmap format (%s) cannot be extracted as text for TTS.\n", sub.SubIndex, sub.Title, sub.CodecName)
+				continue
+			}
 			desc := fmt.Sprintf("Selected embedded Vietnamese subtitle (track #%d", sub.SubIndex)
 			if sub.Title != "" {
 				desc += fmt.Sprintf(" - %s", sub.Title)
@@ -150,6 +164,9 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 		fmt.Println("    ⚠️ No embedded or external Vietnamese subtitle automatically found.")
 		userSelected := media.PromptUserSelectSub(videoInfo.EmbeddedSubStreams)
 		if userSelected != nil {
+			if userSelected.IsBitmap {
+				fmt.Printf("    ⚠️ Selected track #%d is a bitmap subtitle (%s) which cannot be extracted as text.\n", userSelected.SubIndex, userSelected.CodecName)
+			}
 			desc := fmt.Sprintf("Manual selected embedded subtitle (track #%d", userSelected.SubIndex)
 			if userSelected.Title != "" {
 				desc += fmt.Sprintf(" - %s", userSelected.Title)
@@ -167,9 +184,13 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 		}
 	}
 
-	// Priority 3: Embedded English subtitle
+	// Priority 3: Embedded English text subtitle
 	for _, sub := range videoInfo.EmbeddedSubStreams {
 		if sub.Language == "en" {
+			if sub.IsBitmap {
+				fmt.Printf("    ⚠️ Skipping embedded English subtitle track #%d (%s): Bitmap format (%s) cannot be extracted as text for TTS.\n", sub.SubIndex, sub.Title, sub.CodecName)
+				continue
+			}
 			desc := fmt.Sprintf("Selected embedded English subtitle (track #%d", sub.SubIndex)
 			if sub.Title != "" {
 				desc += fmt.Sprintf(" - %s", sub.Title)
@@ -196,28 +217,44 @@ func selectSubtitle(videoPath string, videoInfo *media.VideoInfo, cfg *config.Co
 		}
 	}
 
-	// Priority 5: Fallback to first available embedded subtitle stream
+	// Priority 5: Fallback to first available text-based embedded subtitle stream
 	return fallbackEmbedSub(cfg, videoInfo)
 }
 
 func fallbackEmbedSub(cfg *config.Config, videoInfo *media.VideoInfo) SelectedSubtitle {
 	if len(videoInfo.EmbeddedSubStreams) > 0 {
-		if cfg.DefaultSubIndex >= len(videoInfo.EmbeddedSubStreams) {
-			fmt.Println("    ⚠️ Default subtitle index is out of range. Using first subtitle.")
-			cfg.DefaultSubIndex = 0
+		if cfg.DefaultSubIndex >= 0 && cfg.DefaultSubIndex < len(videoInfo.EmbeddedSubStreams) {
+			sub := videoInfo.EmbeddedSubStreams[cfg.DefaultSubIndex]
+			if !sub.IsBitmap {
+				desc := fmt.Sprintf("Selected embedded subtitle (track #%d, fallback)", sub.SubIndex)
+				lang := sub.Language
+				if lang == "unknown" {
+					lang = cfg.SubLanguage
+				}
+				return SelectedSubtitle{
+					Language:      lang,
+					IsExternal:    false,
+					EmbeddedIndex: sub.SubIndex,
+					Description:   desc,
+					Found:         true,
+				}
+			}
 		}
-		sub := videoInfo.EmbeddedSubStreams[cfg.DefaultSubIndex]
-		desc := fmt.Sprintf("Selected embedded subtitle (track #%d, fallback)", sub.SubIndex)
-		lang := sub.Language
-		if lang == "unknown" {
-			lang = cfg.SubLanguage
-		}
-		return SelectedSubtitle{
-			Language:      lang,
-			IsExternal:    false,
-			EmbeddedIndex: sub.SubIndex,
-			Description:   desc,
-			Found:         true,
+		for _, sub := range videoInfo.EmbeddedSubStreams {
+			if !sub.IsBitmap {
+				desc := fmt.Sprintf("Selected embedded subtitle (track #%d, fallback)", sub.SubIndex)
+				lang := sub.Language
+				if lang == "unknown" {
+					lang = cfg.SubLanguage
+				}
+				return SelectedSubtitle{
+					Language:      lang,
+					IsExternal:    false,
+					EmbeddedIndex: sub.SubIndex,
+					Description:   desc,
+					Found:         true,
+				}
+			}
 		}
 	}
 	return SelectedSubtitle{Found: false}
@@ -336,23 +373,53 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	} else if len(videoInfo.EmbeddedSubStreams) > 0 {
 		// 🌟 CASE 2: Use external subtitle + Video HAS embedded subtitle
 		// Prioritize Sub-to-Sub sync (Fast, 100% accurate, no whispering voice issues)
-		refSubStream := videoInfo.EmbeddedSubStreams[0] // Get the first embedded subtitle track as reference
-		localRefSubPath := filepath.Join(localTempDir, "ref_embedded.srt")
+		var refSubStream *media.EmbeddedSubInfo
+		for i := range videoInfo.EmbeddedSubStreams {
+			if !videoInfo.EmbeddedSubStreams[i].IsBitmap {
+				refSubStream = &videoInfo.EmbeddedSubStreams[i]
+				break
+			}
+		}
 
-		spinExtractRef := utils.StartSpinner(fmt.Sprintf("📜 Extracting embedded subtitle #%d as reference...", refSubStream.SubIndex))
-		if err := media.ExtractEmbeddedSubtitle(localVideoPath, localRefSubPath, refSubStream.SubIndex); err != nil {
-			spinExtractRef.Stop(fmt.Sprintf("Failed to extract reference subtitle: %v", err), true)
-		} else {
-			spinExtractRef.Stop("Extracted embedded subtitle as reference successfully!", false)
+		if refSubStream != nil {
+			localRefSubPath := filepath.Join(localTempDir, "ref_embedded.srt")
 
-			spinSync := utils.StartSpinner("🔄 Synchronizing external subtitle with embedded subtitle (Sub-to-Sub)...")
-			// Call Sub-to-Sub Sync API (pass reference subtitle file instead of audio file)
-			err := api.SyncSubtitleWithServer(cfg, extSubPath, localRefSubPath, localSyncedSub)
-			if err != nil {
-				spinSync.Stop(fmt.Sprintf("Sync Sub-to-Sub failed (%v), using original subtitle.", err), true)
+			spinExtractRef := utils.StartSpinner(fmt.Sprintf("📜 Extracting embedded subtitle #%d as reference...", refSubStream.SubIndex))
+			if err := media.ExtractEmbeddedSubtitle(localVideoPath, localRefSubPath, refSubStream.SubIndex); err != nil {
+				spinExtractRef.Stop(fmt.Sprintf("Failed to extract reference subtitle: %v", err), true)
 			} else {
-				spinSync.Stop("Sub-to-Sub Timeline Sync Perfect!", false)
-				finalSubPath = localSyncedSub
+				spinExtractRef.Stop("Extracted embedded subtitle as reference successfully!", false)
+
+				spinSync := utils.StartSpinner("🔄 Synchronizing external subtitle with embedded subtitle (Sub-to-Sub)...")
+				// Call Sub-to-Sub Sync API (pass reference subtitle file instead of audio file)
+				err := api.SyncSubtitleWithServer(cfg, extSubPath, localRefSubPath, localSyncedSub)
+				if err != nil {
+					spinSync.Stop(fmt.Sprintf("Sync Sub-to-Sub failed (%v), using original subtitle.", err), true)
+				} else {
+					spinSync.Stop("Sub-to-Sub Timeline Sync Perfect!", false)
+					finalSubPath = localSyncedSub
+				}
+			}
+		} else {
+			fmt.Println("ℹ️ [SYNC] Embedded subtitles are bitmap format; falling back to Audio Sync.")
+			if !cfg.SkipSubSync {
+				spinExt := utils.StartSpinner("⏱️ Extracting Anchor Audio for Audio Sync...")
+				targetAudioIndex := videoInfo.SelectOriginalAudioIndex(cfg.OriginalLanguage, cfg.OriginalAudioIndex)
+				fmt.Printf("🎙️ Original audio track selected as input: 0:a:%d\n", targetAudioIndex)
+				if err := media.ExtractAudioAnchor(localVideoPath, localAnchorAudio, targetAudioIndex); err != nil {
+					spinExt.Stop(fmt.Sprintf("Failed to extract Anchor Audio: %v", err), true)
+				} else {
+					spinExt.Stop("Successfully extracted Anchor Audio!", false)
+
+					spinSync := utils.StartSpinner("🔄 Sending data to Subsync server (Audio-based)...")
+					err := api.SyncSubtitleWithServer(cfg, extSubPath, localAnchorAudio, localSyncedSub)
+					if err != nil {
+						spinSync.Stop(fmt.Sprintf("Audio Subsync failed (%v), using original subtitle.", err), true)
+					} else {
+						spinSync.Stop("Audio Subsync Perfect!", false)
+						finalSubPath = localSyncedSub
+					}
+				}
 			}
 		}
 

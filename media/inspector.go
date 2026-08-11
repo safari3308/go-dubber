@@ -37,10 +37,26 @@ type FFProbeOutput struct {
 }
 
 type EmbeddedSubInfo struct {
-	SubIndex int    `json:"sub_index"`
-	Language string `json:"language"` // "vi", "en", "unknown"
-	Title    string `json:"title"`
+	SubIndex  int    `json:"sub_index"`  // Relative 0-based subtitle stream index
+	StreamIdx int    `json:"stream_idx"` // Absolute stream index in video file
+	Language  string `json:"language"`   // "vi", "en", "unknown"
+	Title     string `json:"title"`
+	CodecName string `json:"codec_name"` // "subrip", "ass", "dvd_subtitle", etc.
+	IsBitmap  bool   `json:"is_bitmap"`   // true if graphic/image subtitle
 }
+
+// IsBitmapSubtitleCodec checks if subtitle codec is image/bitmap based (e.g. VobSub, PGS)
+func IsBitmapSubtitleCodec(codecName string) bool {
+	c := strings.ToLower(strings.TrimSpace(codecName))
+	if c == "" {
+		return false
+	}
+	return c == "dvd_subtitle" || c == "dvdsub" ||
+		c == "hdmv_pgs_subtitle" || c == "pgssub" || c == "pgs" ||
+		c == "xsub" || c == "dvb_subtitle" || c == "dvbsub" ||
+		c == "arib_caption" || c == "vobsub"
+}
+
 
 // Store original audio track information
 type AudioStreamDetails struct {
@@ -137,7 +153,14 @@ func PromptUserSelectSub(subs []EmbeddedSubInfo) *EmbeddedSubInfo {
 		if title == "" {
 			title = "<No title>"
 		}
-		fmt.Printf("  [%d] Track Sub #%d | Language: %s | Title: %s\n", i+1, sub.SubIndex, sub.Language, title)
+		typeLabel := sub.CodecName
+		if typeLabel == "" {
+			typeLabel = "unknown"
+		}
+		if sub.IsBitmap {
+			typeLabel += " (Bitmap - unsupported for TTS)"
+		}
+		fmt.Printf("  [%d] Track Sub #%d | Language: %s | Format: %s | Title: %s\n", i+1, sub.SubIndex, sub.Language, typeLabel, title)
 	}
 	fmt.Println("  [0] Skip (Do not use embedded sub)")
 	fmt.Println("==================================================")
@@ -285,10 +308,14 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 					}
 				}
 
+				isBitmap := IsBitmapSubtitleCodec(s.CodecName)
 				info.EmbeddedSubStreams = append(info.EmbeddedSubStreams, EmbeddedSubInfo{
-					SubIndex: subStreamCounter,
-					Language: lang,
-					Title:    title,
+					SubIndex:  subStreamCounter,
+					StreamIdx: s.Index,
+					Language:  lang,
+					Title:     title,
+					CodecName: s.CodecName,
+					IsBitmap:  isBitmap,
 				})
 			}
 			subStreamCounter++

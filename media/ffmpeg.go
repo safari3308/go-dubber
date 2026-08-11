@@ -23,6 +23,7 @@ type FFprobeStreamTag struct {
 type FFprobeStream struct {
 	Index     int              `json:"index"`
 	CodecType string           `json:"codec_type"`
+	CodecName string           `json:"codec_name"`
 	Channels  int              `json:"channels"`
 	Tags      FFprobeStreamTag `json:"tags"`
 }
@@ -231,23 +232,35 @@ func RemuxVideo(
 	}
 
 	// 3. Map Subtitles
-	keptSubCount := 0
-	if len(streams) > 0 {
-		for _, st := range streams {
-			if st.CodecType == "subtitle" {
-				if hasSubInput && isAISubTrack(st.Tags.Title) {
-					continue
-				}
-				ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
-				keptSubCount++
-			}
-		}
-	} else {
-		ffmpegArgs = append(ffmpegArgs, "-map", "0:s?")
-	}
+	ext := strings.ToLower(filepath.Ext(outTempPath))
+	isMP4Container := ext == ".mp4" || ext == ".mov" || ext == ".m4v"
+	isAVIContainer := ext == ".avi"
 
-	if hasSubInput {
-		ffmpegArgs = append(ffmpegArgs, "-map", "2:s:0")
+	keptSubCount := 0
+	if isAVIContainer {
+		fmt.Println("    ⚠️ AVI container format detected: Skipping embedded subtitle stream mapping as AVI does not support subtitle tracks.")
+	} else {
+		if len(streams) > 0 {
+			for _, st := range streams {
+				if st.CodecType == "subtitle" {
+					if hasSubInput && isAISubTrack(st.Tags.Title) {
+						continue
+					}
+					if isMP4Container && IsBitmapSubtitleCodec(st.CodecName) {
+						fmt.Printf("    ⚠️ Skipping bitmap subtitle track #%d (%s) for MP4/MOV container remuxing.\n", st.Index, st.CodecName)
+						continue
+					}
+					ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
+					keptSubCount++
+				}
+			}
+		} else {
+			ffmpegArgs = append(ffmpegArgs, "-map", "0:s?")
+		}
+
+		if hasSubInput {
+			ffmpegArgs = append(ffmpegArgs, "-map", "2:s:0")
+		}
 	}
 
 	// 4. Map Fonts/Attachments
@@ -315,19 +328,24 @@ func RemuxVideo(
 		)
 	}
 
-	// Configure Audio Codec
-	subCodec := "copy"
-	ext := strings.ToLower(filepath.Ext(outTempPath))
-	if ext == ".mp4" || ext == ".mov" || ext == ".m4v" {
-		subCodec = "mov_text"
-	}
-
+	// Configure Audio & Subtitle Codec
 	ffmpegArgs = append(ffmpegArgs, "-c:a", "copy")
 	ffmpegArgs = append(ffmpegArgs,
 		fmt.Sprintf("-c:a:%d", newAudioIndex), "aac",
 		fmt.Sprintf("-b:a:%d", newAudioIndex), audioBitrate,
-		"-c:s", subCodec,
 	)
+
+	if !isAVIContainer {
+		if isMP4Container {
+			ffmpegArgs = append(ffmpegArgs, "-c:s", "mov_text")
+		} else {
+			ffmpegArgs = append(ffmpegArgs, "-c:s", "copy")
+			if hasSubInput {
+				newSubIndex := keptSubCount
+				ffmpegArgs = append(ffmpegArgs, fmt.Sprintf("-c:s:%d", newSubIndex), "subrip")
+			}
+		}
+	}
 
 	// Metadata
 	ffmpegArgs = append(ffmpegArgs,

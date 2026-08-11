@@ -29,3 +29,37 @@ func TestNormalizeLanguage(t *testing.T) {
 		})
 	}
 }
+
+func TestIsBitmapSubtitleCodec(t *testing.T) {
+	tests := []struct {
+		codec    string
+		expected bool
+	}{
+		{"dvd_subtitle", true},
+		{"dvdsub", true},
+		{"hdmv_pgs_subtitle", true},
+		{"pgssub", true},
+		{"pgs", true},
+		{"xsub", true},
+		{"dvb_subtitle", true},
+		{"arib_caption", true},
+		{"subrip", false},
+		{"srt", false},
+		{"ass", false},
+		{"ssa", false},
+		{"mov_text", false},
+		{"webvtt", false},
+		{"text", false},
+		{"microdvd", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.codec, func(t *testing.T) {
+			result := IsBitmapSubtitleCodec(tt.codec)
+			if result != tt.expected {
+				t.Errorf("IsBitmapSubtitleCodec(%q) = %v; want %v", tt.codec, result, tt.expected)
+			}
+		})
+	}
+}
