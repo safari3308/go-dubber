@@ -50,11 +50,11 @@ func collapseRepeatedChars(s string) string {
 		}
 
 		runLength := j - i
-		if runLength >= 3 {
-			// If repeated 3 times or more -> Shorten to 1 character
+		if runLength >= 3 && unicode.IsLetter(runes[i]) {
+			// If repeated 3 times or more AND it is a letter -> Shorten to 1 character
 			result = append(result, runes[i])
 		} else {
-			// If repeated 1 or 2 times -> Keep original
+			// If repeated 1 or 2 times or non-letter -> Keep original
 			result = append(result, runes[i:j]...)
 		}
 		i = j

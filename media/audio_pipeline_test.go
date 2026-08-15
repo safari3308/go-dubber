@@ -17,6 +17,8 @@ func TestCollapseRepeatedChars(t *testing.T) {
 		{"look", "look"},
 		{"speed", "speed"},
 		{"apple", "apple"},
+		{"1000", "1000"},
+		{"9999", "9999"},
 		{"", ""},
 	}
 
@@ -78,6 +80,18 @@ func TestCleanDialogueLine(t *testing.T) {
 			input:    "Có 2 cái",
 			lang:     "vi",
 			expected: "Có hai cái",
+		},
+		{
+			name:     "Preserve numbers 1000 and 9999 (en)",
+			input:    "1000 and 9999",
+			lang:     "en",
+			expected: "1000 and 9999",
+		},
+		{
+			name:     "Convert numbers 1000 and 9999 (vi)",
+			input:    "Có 1000 và 9999",
+			lang:     "vi",
+			expected: "Có một nghìn và chín nghìn chín trăm chín mươi chín",
 		},
 	}
 
