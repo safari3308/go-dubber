@@ -292,6 +292,10 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		return
 	}
 
+	if videoInfo.HasEnglishAudio {
+		fmt.Println("    🎙️ English audio track detected.")
+	}
+
 	// Skip logic based on existing tracks and configuration
 	if !cfg.ForceReprocess {
 		if videoInfo.HasKokoroTrack {
@@ -314,6 +318,10 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		return
 	}
 	fmt.Printf("    💬 %s\n", subChoice.Description)
+
+	if videoInfo.HasEnglishAudio && subChoice.Language == "vi" {
+		fmt.Println("    ✨ Video has English audio & Vietnamese subtitle -> Vietnamese dubbed track will be added alongside existing audio tracks.")
+	}
 
 	// ==========================================
 	// STEP 3: CONFIRM DUBBING ELIGIBILITY -> DOWNLOAD VIDEO TO LOCAL SSD
@@ -344,6 +352,12 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 		}
 
 		extSubPath = extractedSubPath
+		if cfg.DropSongSubtitles {
+			total, kept, err := media.FilterSongAndKaraokeSubtitles(extractedSubPath, extractedSubPath)
+			if err == nil && total > kept {
+				fmt.Printf("    🎵 Filtered song/karaoke subtitles: %d -> %d entries kept\n", total, kept)
+			}
+		}
 		fmt.Println("    ✅ Embedded subtitle extracted successfully!")
 	}
 
@@ -365,10 +379,22 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 	// ==========================================
 	finalSubPath := extSubPath
 
-	if !isExternalSub {
+	// Prepare target subtitle path for sync (filter song text from external subtitle if needed)
+	targetSubPathForSync := extSubPath
+	if isExternalSub && cfg.DropSongSubtitles {
+		cleanExtSubPath := filepath.Join(localTempDir, "clean_ext_"+filepath.Base(extSubPath))
+		total, kept, err := media.FilterSongAndKaraokeSubtitles(extSubPath, cleanExtSubPath)
+		if err == nil && total > kept {
+			fmt.Printf("    🎵 Filtered song text from external subtitle (%d -> %d entries kept)\n", total, kept)
+			targetSubPathForSync = cleanExtSubPath
+			defer os.Remove(cleanExtSubPath)
+		}
+	}
+
+	if !isExternalSub || cfg.SkipSubSync {
 		// 🌟 CASE 1: Use embedded subtitle
 		// Skip sync completely -> DO NOT extract anchor audio unnecessarily
-		fmt.Println("ℹ️ [SYNC] Skipping sync because embedded subtitle is being used.")
+		fmt.Println("ℹ️ [SYNC] Skipping sync because embedded subtitle or skip_sub_sync is true.")
 
 	} else if len(videoInfo.EmbeddedSubStreams) > 0 {
 		// 🌟 CASE 2: Use external subtitle + Video HAS embedded subtitle
@@ -388,11 +414,20 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 			if err := media.ExtractEmbeddedSubtitle(localVideoPath, localRefSubPath, refSubStream.SubIndex); err != nil {
 				spinExtractRef.Stop(fmt.Sprintf("Failed to extract reference subtitle: %v", err), true)
 			} else {
-				spinExtractRef.Stop("Extracted embedded subtitle as reference successfully!", false)
+				if cfg.DropSongSubtitles {
+					total, kept, err := media.FilterSongAndKaraokeSubtitles(localRefSubPath, localRefSubPath)
+					if err == nil && total > kept {
+						spinExtractRef.Stop(fmt.Sprintf("Extracted reference subtitle & filtered song text (%d -> %d entries)!", total, kept), false)
+					} else {
+						spinExtractRef.Stop("Extracted embedded subtitle as reference successfully!", false)
+					}
+				} else {
+					spinExtractRef.Stop("Extracted embedded subtitle as reference successfully!", false)
+				}
 
 				spinSync := utils.StartSpinner("🔄 Synchronizing external subtitle with embedded subtitle (Sub-to-Sub)...")
 				// Call Sub-to-Sub Sync API (pass reference subtitle file instead of audio file)
-				err := api.SyncSubtitleWithServer(cfg, extSubPath, localRefSubPath, localSyncedSub)
+				err := api.SyncSubtitleWithServer(cfg, targetSubPathForSync, localRefSubPath, localSyncedSub)
 				if err != nil {
 					spinSync.Stop(fmt.Sprintf("Sync Sub-to-Sub failed (%v), using original subtitle.", err), true)
 				} else {
@@ -412,7 +447,7 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 					spinExt.Stop("Successfully extracted Anchor Audio!", false)
 
 					spinSync := utils.StartSpinner("🔄 Sending data to Subsync server (Audio-based)...")
-					err := api.SyncSubtitleWithServer(cfg, extSubPath, localAnchorAudio, localSyncedSub)
+					err := api.SyncSubtitleWithServer(cfg, targetSubPathForSync, localAnchorAudio, localSyncedSub)
 					if err != nil {
 						spinSync.Stop(fmt.Sprintf("Audio Subsync failed (%v), using original subtitle.", err), true)
 					} else {

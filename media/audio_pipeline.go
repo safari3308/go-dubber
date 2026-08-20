@@ -174,6 +174,87 @@ func isStatLine(line string) bool {
 	return false
 }
 
+var (
+	reMusicSymbols   = regexp.MustCompile(`[♪♫🎵🎶]`)
+	reSongBrackets   = regexp.MustCompile(`(?i)\[(Music|Song|Singing|♫|♪)\]|\((Music|Song|Singing|♫|♪)\)`)
+	reASSKaraokeTags = regexp.MustCompile(`(?i)\{\\[kKafn]\d*\}|\{\\an[1-9]\}`)
+	reFontName       = regexp.MustCompile(`(?i)font face="([^"]+)"`)
+	songFontKeywords = []string{
+		"clubtypemercurius", "chewy", "bubblegum", "song", "karaoke", "music", "op", "ed",
+	}
+)
+
+// IsSongOrKaraokeLine checks if an SRT line/block is song lyrics or ASS karaoke timing overlay
+func IsSongOrKaraokeLine(rawText string, startSec, endSec float64) bool {
+	// 1. Ultra-short duration (<= 0.15s) or invalid timestamp
+	if endSec-startSec <= 0.15 {
+		return true
+	}
+
+	// 2. Music notes / symbols
+	if reMusicSymbols.MatchString(rawText) {
+		return true
+	}
+
+	// 3. Song annotation brackets
+	if reSongBrackets.MatchString(rawText) {
+		return true
+	}
+
+	// 4. ASS karaoke tags {\k...} or alignment positioning tags {\an1}-{\an9}
+	if reASSKaraokeTags.MatchString(rawText) {
+		return true
+	}
+
+	// 5. Song/Karaoke font faces
+	if fontMatch := reFontName.FindStringSubmatch(rawText); len(fontMatch) > 1 {
+		fontLower := strings.ToLower(fontMatch[1])
+		for _, kw := range songFontKeywords {
+			if strings.Contains(fontLower, kw) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// FilterSongAndKaraokeSubtitles parses an SRT file, drops song/karaoke entries, and writes clean SRT
+func FilterSongAndKaraokeSubtitles(srtPath, outSrtPath string) (int, int, error) {
+	content, err := os.ReadFile(srtPath)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	re := regexp.MustCompile(`(?m)^(\d+)\r?\n(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})\r?\n([\s\S]*?)(?:\r?\n\r?\n|\z)`)
+	matches := re.FindAllStringSubmatch(string(content), -1)
+
+	totalCount := len(matches)
+	var keptBlocks []string
+	newIdx := 1
+
+	for _, m := range matches {
+		startSec := srtTimeToSeconds(m[2])
+		endSec := srtTimeToSeconds(m[3])
+		rawText := m[4]
+
+		if IsSongOrKaraokeLine(rawText, startSec, endSec) {
+			continue
+		}
+
+		block := fmt.Sprintf("%d\n%s --> %s\n%s\n", newIdx, m[2], m[3], strings.TrimSpace(rawText))
+		keptBlocks = append(keptBlocks, block)
+		newIdx++
+	}
+
+	outData := []byte(strings.Join(keptBlocks, "\n"))
+	if err := os.WriteFile(outSrtPath, outData, 0644); err != nil {
+		return totalCount, 0, err
+	}
+
+	return totalCount, len(keptBlocks), nil
+}
+
 // ParseSRT parses and cleans SRT subtitles
 func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
 	content, err := os.ReadFile(srtPath)
@@ -189,8 +270,13 @@ func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
 		idx, _ := strconv.Atoi(m[1])
 		startSec := srtTimeToSeconds(m[2])
 		endSec := srtTimeToSeconds(m[3])
+		rawText := m[4]
 
-		rawLines := strings.Split(m[4], "\n")
+		if IsSongOrKaraokeLine(rawText, startSec, endSec) {
+			continue
+		}
+
+		rawLines := strings.Split(rawText, "\n")
 		var cleanLines []string
 		for _, l := range rawLines {
 			l = strings.TrimSpace(l)

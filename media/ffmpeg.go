@@ -50,9 +50,13 @@ func inspectStreams(videoPath string) ([]FFprobeStream, error) {
 	return probe.Streams, nil
 }
 
-func isAITrack(title string) bool {
+func isAITrack(title, lang string) bool {
 	t := strings.ToLower(title)
-	return strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed") || strings.Contains(t, "dubbed")
+	l := strings.ToLower(lang)
+	if l == "eng" || l == "en" || l == "english" {
+		return false
+	}
+	return strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed")
 }
 
 func isAISubTrack(title string) bool {
@@ -201,7 +205,7 @@ func RemuxVideo(
 		if len(streams) > 0 {
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrack(st.Tags.Title) {
+					if !isAITrack(st.Tags.Title, st.Tags.Language) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}
@@ -216,7 +220,7 @@ func RemuxVideo(
 		if len(streams) > 0 {
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrack(st.Tags.Title) {
+					if !isAITrack(st.Tags.Title, st.Tags.Language) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}

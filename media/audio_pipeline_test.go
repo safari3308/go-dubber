@@ -256,3 +256,74 @@ func TestCreateWAVHeader(t *testing.T) {
 		t.Errorf("Header data tag = %q; want data", string(header[36:40]))
 	}
 }
+
+func TestIsSongOrKaraokeLine(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		startSec float64
+		endSec   float64
+		want     bool
+	}{
+		{"Normal dialogue", "Hello world!", 1.0, 3.0, false},
+		{"Music note symbol", "♪ Lalala song ♪", 1.0, 3.0, true},
+		{"Song bracket", "[Music]", 1.0, 3.0, true},
+		{"ASS karaoke tag", "{\\k15}ka{\\k20}ra{\\k10}o{\\k30}ke", 1.0, 3.0, true},
+		{"ASS position tag an5", "<font face=\"Chewy\">{\\an5}syllable</font>", 1.0, 3.0, true},
+		{"Song font", "<font face=\"ClubTypeMercurius-Medium\">Text</font>", 1.0, 3.0, true},
+		{"Ultra-short duration", "Quick", 1.00, 1.05, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsSongOrKaraokeLine(tt.text, tt.startSec, tt.endSec)
+			if got != tt.want {
+				t.Errorf("IsSongOrKaraokeLine(%q, %v, %v) = %v; want %v", tt.text, tt.startSec, tt.endSec, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterSongAndKaraokeSubtitles(t *testing.T) {
+	tempDir := t.TempDir()
+	inPath := filepath.Join(tempDir, "input.srt")
+	outPath := filepath.Join(tempDir, "output.srt")
+
+	srtContent := `1
+00:00:01,000 --> 00:00:03,000
+Normal dialogue 1
+
+2
+00:00:04,000 --> 00:00:04,100
+Short syllable
+
+3
+00:00:05,000 --> 00:00:07,000
+<font face="ClubTypeMercurius-Medium">♪ Song lyric ♪</font>
+
+4
+00:00:08,000 --> 00:00:10,000
+Normal dialogue 2
+`
+	if err := os.WriteFile(inPath, []byte(srtContent), 0644); err != nil {
+		t.Fatalf("Failed to write input SRT: %v", err)
+	}
+
+	total, kept, err := FilterSongAndKaraokeSubtitles(inPath, outPath)
+	if err != nil {
+		t.Fatalf("FilterSongAndKaraokeSubtitles failed: %v", err)
+	}
+
+	if total != 4 || kept != 2 {
+		t.Errorf("FilterSongAndKaraokeSubtitles total=%d, kept=%d; want total=4, kept=2", total, kept)
+	}
+
+	cleanedEntries, err := ParseSRT(outPath, "en")
+	if err != nil {
+		t.Fatalf("ParseSRT on cleaned file failed: %v", err)
+	}
+
+	if len(cleanedEntries) != 2 {
+		t.Errorf("Parsed entries count = %d; want 2", len(cleanedEntries))
+	}
+}

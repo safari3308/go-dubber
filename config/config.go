@@ -38,6 +38,7 @@ type Config struct {
 	FFmpeg             FFmpegConfig `json:"ffmpeg"`
 	SkipSubSync        bool         `json:"skip_sub_sync"`
 	AITrackAsFirstTrack bool        `json:"ai_track_as_first_track"`
+	DropSongSubtitles   bool        `json:"drop_song_subtitles"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -47,7 +48,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	defer file.Close()
 
-	var cfg Config
+	cfg := Config{
+		DropSongSubtitles: true,
+	}
 	if err := json.NewDecoder(file).Decode(&cfg); err != nil {
 		return nil, err
 	}

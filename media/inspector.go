@@ -73,7 +73,8 @@ type VideoInfo struct {
 	Duration             float64
 	IsWellCompressed     bool   // true if bitrate is already optimized for resolution
 	HasKokoroTrack       bool
-	HasGenericDubTrack   bool
+	HasGenericDubTrack   bool   // true if existing Vietnamese dub track is present
+	HasEnglishAudio      bool   // true if English audio track is present
 	AudioTrackCount      int
 	OriginalAudioIndices []int
 	AudioStreams         []AudioStreamDetails // List of original audio tracks (used to trace source language)
@@ -101,7 +102,7 @@ func matchLanguage(tags map[string]string, targetLang string) bool {
 				(lv == "chi" || lv == "zho" || lv == "zh" || lv == "cn" || strings.Contains(lv, "chin"))
 			isJapanese := (targetLang == "ja" || targetLang == "jp") && (lv == "jpn" || strings.Contains(lv, "japan"))
 			isEnglish := (targetLang == "en") && (lv == "eng" || strings.Contains(lv, "english"))
-			isVietnamese := (targetLang == "vi") && (lv == "vie" || strings.Contains(lv, "viet"))
+			isVietnamese := (targetLang == "vi") && (lv == "vie" || strings.Contains(lv, "viet") || strings.Contains(lv, "thuyết minh") || strings.Contains(lv, "tiếng việt"))
 
 			if isChinese || isJapanese || isEnglish || isVietnamese {
 				return true
@@ -271,10 +272,12 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			tagDump += " " + strings.ToLower(k) + ":" + strings.ToLower(v)
 		}
 
-		isKokoro := strings.Contains(tagDump, "kokoro") || strings.Contains(tagDump, "ai dubbed")
-		isGenericDub := strings.Contains(tagDump, "thuyết minh") ||
-			strings.Contains(tagDump, "synced embedded") ||
-			strings.Contains(tagDump, "fallback")
+		isEng := matchLanguage(s.Tags, "en")
+		isViet := matchLanguage(s.Tags, "vi") || normalizeLanguage(s.Tags) == "vi"
+
+		// Only flag HasKokoroTrack if it's an audio stream and NOT an English track
+		isKokoro := (s.CodecType == "audio") && !isEng && (strings.Contains(tagDump, "kokoro") || strings.Contains(tagDump, "ai dubbed"))
+		isGenericDub := (s.CodecType == "audio") && (isViet || strings.Contains(tagDump, "thuyết minh") || strings.Contains(tagDump, "synced embedded") || strings.Contains(tagDump, "fallback"))
 
 		if isKokoro {
 			info.HasKokoroTrack = true
@@ -286,6 +289,9 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 		switch s.CodecType {
 		case "audio":
 			info.AudioTrackCount++
+			if matchLanguage(s.Tags, "en") {
+				info.HasEnglishAudio = true
+			}
 			if !isKokoro {
 				info.OriginalAudioIndices = append(info.OriginalAudioIndices, audioStreamCounter)
 				// 🌟 Store audio stream details for SelectOriginalAudioIndex
