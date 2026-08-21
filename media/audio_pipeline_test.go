@@ -266,10 +266,10 @@ func TestIsSongOrKaraokeLine(t *testing.T) {
 		want     bool
 	}{
 		{"Normal dialogue", "Hello world!", 1.0, 3.0, false},
+		{"Top dialogue with an8 tag", "<font face=\"Arial\">{\\an8}TẬP 3: ELNA TẬP KÍCH</font>", 1.0, 3.0, false},
 		{"Music note symbol", "♪ Lalala song ♪", 1.0, 3.0, true},
 		{"Song bracket", "[Music]", 1.0, 3.0, true},
 		{"ASS karaoke tag", "{\\k15}ka{\\k20}ra{\\k10}o{\\k30}ke", 1.0, 3.0, true},
-		{"ASS position tag an5", "<font face=\"Chewy\">{\\an5}syllable</font>", 1.0, 3.0, true},
 		{"Song font", "<font face=\"ClubTypeMercurius-Medium\">Text</font>", 1.0, 3.0, true},
 		{"Ultra-short duration", "Quick", 1.00, 1.05, true},
 	}

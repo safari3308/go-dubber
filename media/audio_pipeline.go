@@ -177,10 +177,10 @@ func isStatLine(line string) bool {
 var (
 	reMusicSymbols   = regexp.MustCompile(`[♪♫🎵🎶]`)
 	reSongBrackets   = regexp.MustCompile(`(?i)\[(Music|Song|Singing|♫|♪)\]|\((Music|Song|Singing|♫|♪)\)`)
-	reASSKaraokeTags = regexp.MustCompile(`(?i)\{\\[kKafn]\d*\}|\{\\an[1-9]\}`)
+	reASSKaraokeTags = regexp.MustCompile(`(?i)\{\\k[fota]?\d*\}`)
 	reFontName       = regexp.MustCompile(`(?i)font face="([^"]+)"`)
 	songFontKeywords = []string{
-		"clubtypemercurius", "chewy", "bubblegum", "song", "karaoke", "music", "op", "ed",
+		"clubtypemercurius", "chewy", "bubblegum", "song", "karaoke", "music",
 	}
 )
 
@@ -201,7 +201,7 @@ func IsSongOrKaraokeLine(rawText string, startSec, endSec float64) bool {
 		return true
 	}
 
-	// 4. ASS karaoke tags {\k...} or alignment positioning tags {\an1}-{\an9}
+	// 4. ASS karaoke tags {\k...}, {\kf...}, {\ko...} (note: positioning tags like {\an8} are preserved for top dialogue)
 	if reASSKaraokeTags.MatchString(rawText) {
 		return true
 	}
