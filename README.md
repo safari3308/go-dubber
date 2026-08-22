@@ -46,6 +46,7 @@ cp config.example.json config.json
 | `nas_dir`          | Path to the NAS directory containing video files |
 | `api_url`          | TTS service API base URL                         |
 | `api_token`        | Bearer token for API authentication              |
+| `dub_languages`    | List of target dubbing languages (e.g. `["en", "vi"]`) |
 | `use_gpu`          | Enable NVIDIA NVENC GPU encoding                 |
 | `workers`          | Number of concurrent TTS rendering workers       |
 | `force_reprocess`  | Re-process videos that already have Kokoro tracks|

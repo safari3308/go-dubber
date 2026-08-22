@@ -220,6 +220,11 @@ func fallbackEmbedSubForLanguage(cfg *config.Config, videoInfo *media.VideoInfo,
 	return SelectedSubtitle{Found: false}
 }
 
+type PendingDub struct {
+	TargetLang string
+	SubChoice  SelectedSubtitle
+}
+
 func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) {
 	// 🌟 PROTECT 1: Check Server TTS health before doing anything
 	if err := api.CheckServerHealth(cfg); err != nil {
@@ -229,14 +234,16 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 
 	fmt.Printf("\n🎬 Inspecting video: %s\n", filepath.Base(nasVideoPath))
 
-	for _, targetLang := range cfg.DubLanguages {
-		// Re-probe video metadata for each target language (in case previous language iteration updated the file on NAS)
-		videoInfo, err := media.InspectVideo(nasVideoPath)
-		if err != nil {
-			fmt.Printf("    ❌ Failed to inspect video metadata: %v\n", err)
-			continue
-		}
+	// Fast metadata probe over NAS network once
+	videoInfo, err := media.InspectVideo(nasVideoPath)
+	if err != nil {
+		fmt.Printf("    ❌ Failed to inspect video metadata: %v\n", err)
+		return
+	}
 
+	var pendingDubs []PendingDub
+
+	for _, targetLang := range cfg.DubLanguages {
 		// Skip logic based on existing tracks and configuration
 		if !cfg.ForceReprocess {
 			if videoInfo.HasAudioLanguage(targetLang) {
@@ -251,16 +258,21 @@ func processVideo(nasVideoPath string, cfg *config.Config, localTempDir string) 
 			fmt.Printf("    ⚠️ No subtitle matching language '%s' found. Skipping '%s' dub.\n", targetLang, targetLang)
 			continue
 		}
-		fmt.Printf("    💬 %s\n", subChoice.Description)
+		fmt.Printf("    💬 Selected subtitle for '%s': %s\n", targetLang, subChoice.Description)
 
-		processVideoForLanguage(nasVideoPath, videoInfo, subChoice, cfg, localTempDir, targetLang)
+		pendingDubs = append(pendingDubs, PendingDub{
+			TargetLang: targetLang,
+			SubChoice:  subChoice,
+		})
 	}
-}
 
-func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, subChoice SelectedSubtitle, cfg *config.Config, localTempDir string, targetLang string) {
-	totalStart := time.Now()
-	var ttsDuration, remuxDuration time.Duration
+	if len(pendingDubs) == 0 {
+		return
+	}
 
+	// ==========================================
+	// DOWNLOAD VIDEO TO LOCAL SSD (ONCE FOR ALL DUB LANGUAGES)
+	// ==========================================
 	origFileInfo, err := os.Stat(nasVideoPath)
 	origSize := int64(0)
 	if err == nil {
@@ -270,17 +282,96 @@ func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, su
 	baseName := strings.TrimSuffix(filepath.Base(nasVideoPath), filepath.Ext(nasVideoPath))
 	localVideoPath := filepath.Join(localTempDir, filepath.Base(nasVideoPath))
 
-	// ==========================================
-	// DOWNLOAD VIDEO TO LOCAL SSD
-	// ==========================================
-	spinCopy := utils.StartSpinner("📥 Downloading original video from NAS to Local SSD...")
+	spinCopy := utils.StartSpinner(fmt.Sprintf("📥 Downloading video from NAS to Local SSD (%d dub(s) pending: %v)...", len(pendingDubs), getPendingLangList(pendingDubs)))
 	copyStart := time.Now()
 	err = utils.CopyFile(nasVideoPath, localVideoPath)
 	if err != nil {
 		spinCopy.Stop(fmt.Sprintf("Download failed: %v", err), true)
 		return
 	}
-	spinCopy.Stop(fmt.Sprintf("Downloaded original video to Local SSD! (%s)", utils.FormatDuration(time.Since(copyStart))), false)
+	spinCopy.Stop(fmt.Sprintf("Downloaded video to Local SSD! (%s)", utils.FormatDuration(time.Since(copyStart))), false)
+	defer os.Remove(localVideoPath)
+
+	var completedDubs int
+	totalStart := time.Now()
+
+	for i, dub := range pendingDubs {
+		targetLang := dub.TargetLang
+		subChoice := dub.SubChoice
+		fmt.Printf("\n🎙️ [%d/%d] Processing '%s' dub on local asset...\n", i+1, len(pendingDubs), targetLang)
+
+		// Re-inspect local video file to get exact updated stream details
+		localVideoInfo, err := media.InspectVideo(localVideoPath)
+		if err != nil {
+			localVideoInfo = videoInfo
+		}
+
+		err = processSingleDubOnLocalFile(localVideoPath, localVideoInfo, subChoice, cfg, localTempDir, targetLang, baseName)
+		if err != nil {
+			fmt.Printf("    ❌ Error processing '%s' dub: %v\n", targetLang, err)
+		} else {
+			completedDubs++
+		}
+	}
+
+	if completedDubs == 0 {
+		fmt.Println("    ⚠️ No dubs succeeded for this video. Skipping NAS update.")
+		return
+	}
+
+	// ==========================================
+	// SAFE NAS REPLACEMENT & VERIFICATION (ONCE FOR ALL DUB LANGUAGES)
+	// ==========================================
+	spinPush := utils.StartSpinner("🚚 Transferring finalized asset back to NAS...")
+	err = utils.SafeReplaceOnNAS(localVideoPath, nasVideoPath)
+	if err != nil {
+		spinPush.Stop(fmt.Sprintf("Failed to transfer asset to NAS: %v", err), true)
+		return
+	}
+	spinPush.Stop("Asset verified 100% and safely replaced on NAS!", false)
+
+	// ==========================================
+	// EXECUTION METRICS REPORT
+	// ==========================================
+	totalDuration := time.Since(totalStart)
+	newFileInfo, err := os.Stat(nasVideoPath)
+	newSize := int64(0)
+	if err == nil {
+		newSize = newFileInfo.Size()
+	}
+
+	fmt.Printf("\n    📊 TIME & STORAGE REPORT (%d dub(s) completed):\n", completedDubs)
+	fmt.Printf("        ⏳ Total Execution Time: %s\n", utils.FormatDuration(totalDuration))
+
+	if origSize > 0 && newSize > 0 {
+		diff := origSize - newSize
+		if diff > 0 {
+			pct := (float64(diff) / float64(origSize)) * 100
+			fmt.Printf("        💾 Original Size:        %s\n", utils.FormatBytes(origSize))
+			fmt.Printf("        💾 Optimized Size:       %s\n", utils.FormatBytes(newSize))
+			fmt.Printf("        🎉 SAVED:                %s (Reduced disk space by %.1f%%)\n", utils.FormatBytes(diff), pct)
+		} else if diff < 0 {
+			increase := -diff
+			pct := (float64(increase) / float64(origSize)) * 100
+			fmt.Printf("        💾 Original Size:        %s\n", utils.FormatBytes(origSize))
+			fmt.Printf("        💾 Optimized Size:       %s (+%.1f%% due to extra audio/sub tracks)\n", utils.FormatBytes(newSize), pct)
+		} else {
+			fmt.Printf("        💾 Size Unchanged:       %s\n", utils.FormatBytes(origSize))
+		}
+	}
+	fmt.Println("    --------------------------------------------------")
+}
+
+func getPendingLangList(dubs []PendingDub) []string {
+	var langs []string
+	for _, d := range dubs {
+		langs = append(langs, d.TargetLang)
+	}
+	return langs
+}
+
+func processSingleDubOnLocalFile(localVideoPath string, videoInfo *media.VideoInfo, subChoice SelectedSubtitle, cfg *config.Config, localTempDir string, targetLang string, baseName string) error {
+	var ttsDuration, remuxDuration time.Duration
 
 	extSubPath := subChoice.SubPath
 	currentLang := targetLang
@@ -293,9 +384,7 @@ func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, su
 
 		err := media.ExtractEmbeddedSubtitle(localVideoPath, extractedSubPath, subChoice.EmbeddedIndex)
 		if err != nil {
-			fmt.Printf("    ❌ Failed to extract embedded subtitle: %v -> Skipping.\n", err)
-			_ = os.Remove(localVideoPath)
-			return
+			return fmt.Errorf("failed to extract embedded subtitle: %w", err)
 		}
 
 		extSubPath = extractedSubPath
@@ -316,10 +405,10 @@ func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, su
 	localAnchorAudio := filepath.Join(localTempDir, "anchor_"+baseName+"_"+targetLang+".aac")
 	localSyncedSub := filepath.Join(localTempDir, "synced_"+baseName+"_"+targetLang+subExt)
 	localTtsWav := filepath.Join(localTempDir, "tts_"+baseName+"_"+targetLang+".wav")
-	localOutVideo := filepath.Join(localTempDir, "out_"+filepath.Base(nasVideoPath))
+	localOutVideo := filepath.Join(localTempDir, "out_"+filepath.Base(localVideoPath))
 
 	// Register temp file cleanup
-	defer utils.CleanTempFiles(localVideoPath, localAnchorAudio, localSyncedSub, localTtsWav, localOutVideo)
+	defer utils.CleanTempFiles(localAnchorAudio, localSyncedSub, localTtsWav, localOutVideo)
 	if !isExternalSub {
 		defer os.Remove(extSubPath)
 	}
@@ -438,14 +527,14 @@ func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, su
 	totalLines, err := media.ProcessDubbingPipeline(cfg, finalSubPath, localTtsWav, localTempDir, currentLang, videoInfo.Duration, spinTTS)
 	if err != nil {
 		spinTTS.Stop(fmt.Sprintf("AI Voice rendering failed: %v", err), true)
-		return
+		return err
 	}
 	ttsDuration = time.Since(ttsStart)
 
 	fi, err := os.Stat(localTtsWav)
 	if err != nil || fi.Size() == 0 {
 		spinTTS.Stop("TTS audio file empty (0 byte) or does not exist -> Cancel Remux!", true)
-		return
+		return fmt.Errorf("empty TTS audio file")
 	}
 
 	spinTTS.Stop(fmt.Sprintf("Created AI voice for %d lines! (Time: %s)", totalLines, utils.FormatDuration(ttsDuration)), false)
@@ -473,53 +562,20 @@ func processVideoForLanguage(nasVideoPath string, videoInfo *media.VideoInfo, su
 	err = media.RemuxVideo(cfg, localVideoPath, localTtsWav, finalSubPath, localOutVideo, videoInfo, isExternalSub, currentLang)
 	if err != nil {
 		spinRemux.Stop(fmt.Sprintf("FFmpeg Remux Error: %v", err), true)
-		return
+		return err
 	}
 	remuxDuration = time.Since(remuxStart)
 	spinRemux.Stop(fmt.Sprintf("Video processing complete! (Duration: %s)", utils.FormatDuration(remuxDuration)), false)
 
-	// ==========================================
-	// SAFE NAS REPLACEMENT & VERIFICATION
-	// ==========================================
-	spinPush := utils.StartSpinner("🚚 Transferring finalized asset back to NAS...")
-	err = utils.SafeReplaceOnNAS(localOutVideo, nasVideoPath)
-	if err != nil {
-		spinPush.Stop(fmt.Sprintf("Failed to transfer asset to NAS: %v", err), true)
-		return
-	}
-	spinPush.Stop("Asset verified 100% and safely replaced on NAS!", false)
-
-	// ==========================================
-	// EXECUTION METRICS REPORT
-	// ==========================================
-	totalDuration := time.Since(totalStart)
-	newFileInfo, err := os.Stat(nasVideoPath)
-	newSize := int64(0)
-	if err == nil {
-		newSize = newFileInfo.Size()
-	}
-
-	fmt.Printf("\n    📊 TIME & STORAGE REPORT FOR '%s' DUB:\n", targetLang)
-	fmt.Printf("        🎙️  AI Dubbing:          %s\n", utils.FormatDuration(ttsDuration))
-	fmt.Printf("        ⚡ Remux / Transcode:    %s\n", utils.FormatDuration(remuxDuration))
-	fmt.Printf("        ⏳ Total Execution Time: %s\n", utils.FormatDuration(totalDuration))
-
-	if origSize > 0 && newSize > 0 {
-		diff := origSize - newSize
-		if diff > 0 {
-			pct := (float64(diff) / float64(origSize)) * 100
-			fmt.Printf("        💾 Original Size:        %s\n", utils.FormatBytes(origSize))
-			fmt.Printf("        💾 Optimized Size:       %s\n", utils.FormatBytes(newSize))
-			fmt.Printf("        🎉 SAVED:                %s (Reduced disk space by %.1f%%)\n", utils.FormatBytes(diff), pct)
-		} else if diff < 0 {
-			increase := -diff
-			pct := (float64(increase) / float64(origSize)) * 100
-			fmt.Printf("        💾 Original Size:        %s\n", utils.FormatBytes(origSize))
-			fmt.Printf("        💾 Optimized Size:       %s (+%.1f%% due to extra audio/sub tracks)\n", utils.FormatBytes(newSize), pct)
-		} else {
-			fmt.Printf("        💾 Size Unchanged:       %s\n", utils.FormatBytes(origSize))
+	// Update localVideoPath in-place with newly remuxed video output for subsequent dubs
+	if err := os.Rename(localOutVideo, localVideoPath); err != nil {
+		// Fallback to Copy & Remove if rename across volumes fails
+		if errCopy := utils.CopyFile(localOutVideo, localVideoPath); errCopy != nil {
+			return fmt.Errorf("failed to update local video asset: %w", errCopy)
 		}
+		_ = os.Remove(localOutVideo)
 	}
-	fmt.Println("    --------------------------------------------------")
+
+	return nil
 }
 
