@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strings"
 )
 
 type FFmpegConfig struct {
@@ -20,25 +21,26 @@ type FFmpegConfig struct {
 }
 
 type Config struct {
-	NasDir             string       `json:"nas_dir"`
-	ApiUrl             string       `json:"api_url"`
-	ApiToken           string       `json:"api_token"`
-	ForceFallbackSub   bool         `json:"force_fallback_sub"`
-	InteractiveMode    bool         `json:"interactive_mode"`
-	DefaultSubIndex    int          `json:"default_sub_index"`
-	SubLanguage        string       `json:"sub_language"`
-	OriginalLanguage   string       `json:"original_language"` // e.g., "ja", "en", "vi"
-	OriginalAudioIndex int          `json:"original_audio_index"` // fallback index if not found
-	UseGPU             bool         `json:"use_gpu"`
-	Workers            int          `json:"workers"`
-	ForceReprocess     bool         `json:"force_reprocess"`
-	SkipEncode         bool         `json:"skip_encode"`
-	OnlyCheckKokoro    bool         `json:"only_check_kokoro"`
-	TTSSpeed           float64      `json:"tts_speed"`
-	FFmpeg             FFmpegConfig `json:"ffmpeg"`
-	SkipSubSync        bool         `json:"skip_sub_sync"`
-	AITrackAsFirstTrack bool        `json:"ai_track_as_first_track"`
-	DropSongSubtitles   bool        `json:"drop_song_subtitles"`
+	NasDir              string       `json:"nas_dir"`
+	ApiUrl              string       `json:"api_url"`
+	ApiToken            string       `json:"api_token"`
+	ForceFallbackSub    bool         `json:"force_fallback_sub"`
+	InteractiveMode     bool         `json:"interactive_mode"`
+	DefaultSubIndex     int          `json:"default_sub_index"`
+	DubLanguages        []string     `json:"dub_languages"`     // e.g., ["en", "vi"]
+	SubLanguage         string       `json:"sub_language"`      // legacy single target language
+	OriginalLanguage    string       `json:"original_language"` // e.g., "ja", "en", "vi"
+	OriginalAudioIndex  int          `json:"original_audio_index"` // fallback index if not found
+	UseGPU              bool         `json:"use_gpu"`
+	Workers             int          `json:"workers"`
+	ForceReprocess      bool         `json:"force_reprocess"`
+	SkipEncode          bool         `json:"skip_encode"`
+	OnlyCheckKokoro     bool         `json:"only_check_kokoro"`
+	TTSSpeed            float64      `json:"tts_speed"`
+	FFmpeg              FFmpegConfig `json:"ffmpeg"`
+	SkipSubSync         bool         `json:"skip_sub_sync"`
+	AITrackAsFirstTrack bool         `json:"ai_track_as_first_track"`
+	DropSongSubtitles   bool         `json:"drop_song_subtitles"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -57,5 +59,27 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.TTSSpeed <= 0 {
 		cfg.TTSSpeed = 1.1
 	}
+
+	// Normalize DubLanguages
+	var normLangs []string
+	seen := make(map[string]bool)
+	for _, l := range cfg.DubLanguages {
+		cleaned := strings.ToLower(strings.TrimSpace(l))
+		if cleaned != "" && !seen[cleaned] {
+			seen[cleaned] = true
+			normLangs = append(normLangs, cleaned)
+		}
+	}
+
+	if len(normLangs) == 0 {
+		subLang := strings.ToLower(strings.TrimSpace(cfg.SubLanguage))
+		if subLang != "" {
+			normLangs = append(normLangs, subLang)
+		} else {
+			normLangs = append(normLangs, "vi")
+		}
+	}
+	cfg.DubLanguages = normLangs
+
 	return &cfg, nil
 }

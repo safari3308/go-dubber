@@ -52,11 +52,19 @@ func inspectStreams(videoPath string) ([]FFprobeStream, error) {
 
 func isAITrack(title, lang string) bool {
 	t := strings.ToLower(title)
-	l := strings.ToLower(lang)
-	if l == "eng" || l == "en" || l == "english" {
+	return strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed")
+}
+
+func isAITrackForLanguage(title, trackLang, targetLang string) bool {
+	t := strings.ToLower(title)
+	if !(strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed")) {
 		return false
 	}
-	return strings.Contains(t, "kokoro") || strings.Contains(t, "ai dubbed")
+	tags := map[string]string{
+		"language": trackLang,
+		"title":    title,
+	}
+	return matchLanguage(tags, targetLang)
 }
 
 func isAISubTrack(title string) bool {
@@ -169,7 +177,7 @@ func RemuxVideo(
 	// =========================================================================
 	// PASS 2: MUX VIDEO, STREAM COPY AUDIO & EMBED SUBTITLE
 	// =========================================================================
-	hasSubInput := subPath != "" && utils.FileExists(subPath)
+	hasSubInput := isExternalSub && subPath != "" && utils.FileExists(subPath)
 
 	var ffmpegArgs []string
 	
@@ -205,7 +213,7 @@ func RemuxVideo(
 		if len(streams) > 0 {
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrack(st.Tags.Title, st.Tags.Language) {
+					if !isAITrackForLanguage(st.Tags.Title, st.Tags.Language, lang) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}
@@ -220,7 +228,7 @@ func RemuxVideo(
 		if len(streams) > 0 {
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrack(st.Tags.Title, st.Tags.Language) {
+					if !isAITrackForLanguage(st.Tags.Title, st.Tags.Language, lang) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}

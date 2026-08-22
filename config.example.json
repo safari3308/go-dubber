@@ -9,6 +9,7 @@
   "skip_sub_sync": false,
   "ai_track_as_first_track": false,
   "drop_song_subtitles": true,
+  "dub_languages": ["en", "vi"],
   "tts_speed": 1.1,
   "ffmpeg": {
     "gpu_codec": "hevc_nvenc",

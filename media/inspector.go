@@ -58,9 +58,10 @@ func IsBitmapSubtitleCodec(codecName string) bool {
 }
 
 
-// Store original audio track information
+// Store audio track information
 type AudioStreamDetails struct {
 	AudioIndex int               // Relative index between audio tracks (0, 1, 2...)
+	IsKokoro   bool
 	Tags       map[string]string
 }
 
@@ -77,9 +78,28 @@ type VideoInfo struct {
 	HasEnglishAudio      bool   // true if English audio track is present
 	AudioTrackCount      int
 	OriginalAudioIndices []int
-	AudioStreams         []AudioStreamDetails // List of original audio tracks (used to trace source language)
+	AudioStreams         []AudioStreamDetails // List of audio tracks
 	OriginalSubIndices   []int
 	EmbeddedSubStreams   []EmbeddedSubInfo
+}
+
+// HasAudioLanguage checks if any audio track (original or dubbed) matches targetLang
+func (v *VideoInfo) HasAudioLanguage(targetLang string) bool {
+	if targetLang == "" {
+		return false
+	}
+	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
+
+	for _, stream := range v.AudioStreams {
+		if matchLanguage(stream.Tags, targetLang) {
+			return true
+		}
+		norm := normalizeLanguage(stream.Tags)
+		if norm != "unknown" && norm == targetLang {
+			return true
+		}
+	}
+	return false
 }
 
 // 🌟 Function to check if audio track matches the required language
@@ -118,10 +138,10 @@ func (v *VideoInfo) SelectOriginalAudioIndex(targetLang string, defaultIndex int
 		return 0
 	}
 
-	// Tier 1: Find by required language (OriginalLanguage)
+	// Tier 1: Find by required language (OriginalLanguage) among non-Kokoro tracks
 	if targetLang != "" {
 		for _, stream := range v.AudioStreams {
-			if matchLanguage(stream.Tags, targetLang) {
+			if !stream.IsKokoro && matchLanguage(stream.Tags, targetLang) {
 				fmt.Printf("    ✅ Found Audio Track #%d matching language '%s'\n", stream.AudioIndex, targetLang)
 				return stream.AudioIndex
 			}
@@ -129,14 +149,21 @@ func (v *VideoInfo) SelectOriginalAudioIndex(targetLang string, defaultIndex int
 		fmt.Printf("    ⚠️ Not found Audio Track '%s'. Moving to Fallback Index...\n", targetLang)
 	}
 
-	// Tier 2: Fallback to configured Audio Track Index (If valid within range)
-	if defaultIndex >= 0 && defaultIndex < v.AudioTrackCount {
-		fmt.Printf("    🔄 Using Fallback Audio Track Index: #%d\n", defaultIndex)
-		return defaultIndex
+	// Tier 2: Fallback to configured Audio Track Index (If valid within range and non-Kokoro)
+	if defaultIndex >= 0 && defaultIndex < len(v.AudioStreams) {
+		if !v.AudioStreams[defaultIndex].IsKokoro {
+			fmt.Printf("    🔄 Using Fallback Audio Track Index: #%d\n", defaultIndex)
+			return defaultIndex
+		}
 	}
 
-	// Tier 3: Fallback to 0 if configured Index is out of range
-	fmt.Printf("    ⚠️ Config OriginalAudioIndex (%d) is out of range [0..%d]. Fallback to Audio Track #0\n", defaultIndex, v.AudioTrackCount-1)
+	// Tier 3: Fallback to first non-Kokoro audio track
+	for _, stream := range v.AudioStreams {
+		if !stream.IsKokoro {
+			return stream.AudioIndex
+		}
+	}
+
 	return 0
 }
 
@@ -272,11 +299,10 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			tagDump += " " + strings.ToLower(k) + ":" + strings.ToLower(v)
 		}
 
-		isEng := matchLanguage(s.Tags, "en")
 		isViet := matchLanguage(s.Tags, "vi") || normalizeLanguage(s.Tags) == "vi"
 
-		// Only flag HasKokoroTrack if it's an audio stream and NOT an English track
-		isKokoro := (s.CodecType == "audio") && !isEng && (strings.Contains(tagDump, "kokoro") || strings.Contains(tagDump, "ai dubbed"))
+		// Flag Kokoro track for any audio stream containing kokoro or ai dubbed
+		isKokoro := (s.CodecType == "audio") && (strings.Contains(tagDump, "kokoro") || strings.Contains(tagDump, "ai dubbed"))
 		isGenericDub := (s.CodecType == "audio") && (isViet || strings.Contains(tagDump, "thuyết minh") || strings.Contains(tagDump, "synced embedded") || strings.Contains(tagDump, "fallback"))
 
 		if isKokoro {
@@ -292,13 +318,13 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			if matchLanguage(s.Tags, "en") {
 				info.HasEnglishAudio = true
 			}
+			info.AudioStreams = append(info.AudioStreams, AudioStreamDetails{
+				AudioIndex: audioStreamCounter,
+				IsKokoro:   isKokoro,
+				Tags:       s.Tags,
+			})
 			if !isKokoro {
 				info.OriginalAudioIndices = append(info.OriginalAudioIndices, audioStreamCounter)
-				// 🌟 Store audio stream details for SelectOriginalAudioIndex
-				info.AudioStreams = append(info.AudioStreams, AudioStreamDetails{
-					AudioIndex: audioStreamCounter,
-					Tags:       s.Tags,
-				})
 			}
 			audioStreamCounter++
 		case "subtitle":

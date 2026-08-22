@@ -63,3 +63,23 @@ func TestIsBitmapSubtitleCodec(t *testing.T) {
 		})
 	}
 }
+
+func TestHasAudioLanguage(t *testing.T) {
+	v := &VideoInfo{
+		AudioStreams: []AudioStreamDetails{
+			{AudioIndex: 0, IsKokoro: false, Tags: map[string]string{"language": "jpn", "title": "Original Japanese"}},
+			{AudioIndex: 1, IsKokoro: true, Tags: map[string]string{"language": "eng", "title": "AI Dubbed (Kokoro AI)"}},
+		},
+	}
+
+	if !v.HasAudioLanguage("ja") {
+		t.Errorf("HasAudioLanguage('ja') = false; want true")
+	}
+	if !v.HasAudioLanguage("en") {
+		t.Errorf("HasAudioLanguage('en') = false; want true (found English Kokoro track)")
+	}
+	if v.HasAudioLanguage("vi") {
+		t.Errorf("HasAudioLanguage('vi') = true; want false")
+	}
+}
+

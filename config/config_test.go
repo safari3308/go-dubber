@@ -98,3 +98,41 @@ func TestLoadConfig_InvalidJSON(t *testing.T) {
 		t.Errorf("LoadConfig expected error for invalid JSON, got nil")
 	}
 }
+
+func TestLoadConfig_DubLanguages(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Test 1: Explicit dub_languages provided
+	cfg1Path := filepath.Join(tempDir, "cfg1.json")
+	_ = os.WriteFile(cfg1Path, []byte(`{"dub_languages": ["EN", " vi ", "en"]}`), 0644)
+	cfg1, err := LoadConfig(cfg1Path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg1.DubLanguages) != 2 || cfg1.DubLanguages[0] != "en" || cfg1.DubLanguages[1] != "vi" {
+		t.Errorf("cfg1.DubLanguages = %v; want [en vi]", cfg1.DubLanguages)
+	}
+
+	// Test 2: Fallback to sub_language
+	cfg2Path := filepath.Join(tempDir, "cfg2.json")
+	_ = os.WriteFile(cfg2Path, []byte(`{"sub_language": "EN"}`), 0644)
+	cfg2, err := LoadConfig(cfg2Path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg2.DubLanguages) != 1 || cfg2.DubLanguages[0] != "en" {
+		t.Errorf("cfg2.DubLanguages = %v; want [en]", cfg2.DubLanguages)
+	}
+
+	// Test 3: Default to vi when neither is set
+	cfg3Path := filepath.Join(tempDir, "cfg3.json")
+	_ = os.WriteFile(cfg3Path, []byte(`{}`), 0644)
+	cfg3, err := LoadConfig(cfg3Path)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if len(cfg3.DubLanguages) != 1 || cfg3.DubLanguages[0] != "vi" {
+		t.Errorf("cfg3.DubLanguages = %v; want [vi]", cfg3.DubLanguages)
+	}
+}
+
