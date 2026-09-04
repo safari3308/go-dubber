@@ -401,3 +401,15 @@ func ExtractEmbeddedSubtitle(videoPath, outSrtPath string, subIndex int) error {
 	}
 	return nil
 }
+
+// ConvertToSRT converts any subtitle format (.ass, .ssa, .vtt, .sub, .sbv, etc.) to standard .srt using FFmpeg
+func ConvertToSRT(inputSubPath, outputSrtPath string) error {
+	cmd := exec.Command("ffmpeg", "-y", "-i", inputSubPath, outputSrtPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to convert subtitle %s to srt: %s", filepath.Base(inputSubPath), stderr.String())
+	}
+	return nil
+}
+

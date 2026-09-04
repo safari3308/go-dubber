@@ -17,7 +17,8 @@ func TestNormalizeLanguage(t *testing.T) {
 		{"English tag (eng)", map[string]string{"language": "eng"}, "en"},
 		{"English tag (en)", map[string]string{"lang": "en"}, "en"},
 		{"English in title", map[string]string{"title": "English Subtitles"}, "en"},
-		{"Unknown language", map[string]string{"language": "jpn", "title": "Japanese"}, "unknown"},
+		{"Japanese language", map[string]string{"language": "jpn", "title": "Japanese"}, "ja"},
+		{"Unknown language", map[string]string{"language": "unknown_xyz"}, "unknown"},
 	}
 
 	for _, tt := range tests {

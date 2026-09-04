@@ -172,7 +172,6 @@ func main() {
 }
 
 
-
 type SelectedSubtitle struct {
 	SubPath       string
 	Language      string // e.g. "vi", "en"
@@ -182,49 +181,266 @@ type SelectedSubtitle struct {
 	Found         bool
 }
 
+func getLanguageTokens(targetLang string) []string {
+	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
+	tokens := []string{targetLang}
+
+	switch targetLang {
+	case "vi":
+		tokens = append(tokens, "vie", "viet", "vietnamese", "vietsub", "vsub", "tiengviet", "tiếng việt")
+	case "en":
+		tokens = append(tokens, "eng", "english", "engsub")
+	case "ja", "jp":
+		tokens = append(tokens, "ja", "jp", "jpn", "japanese", "japsub")
+	case "zh", "cn":
+		tokens = append(tokens, "zh", "cn", "chi", "zho", "chinese", "chinsub")
+	}
+
+	// Remove duplicates while preserving order
+	seen := make(map[string]bool)
+	var unique []string
+	for _, tok := range tokens {
+		lTok := strings.ToLower(tok)
+		if !seen[lTok] {
+			seen[lTok] = true
+			unique = append(unique, tok)
+		}
+	}
+	return unique
+}
+
+func extractEpisodeCodes(baseName string) []string {
+	var codes []string
+	seen := make(map[string]bool)
+	add := func(c string) {
+		c = strings.TrimSpace(c)
+		if c != "" && !seen[strings.ToLower(c)] {
+			seen[strings.ToLower(c)] = true
+			codes = append(codes, c)
+		}
+	}
+
+	reSE := regexp.MustCompile(`(?i)S(\d+)E(\d+)`)
+	matchesSE := reSE.FindStringSubmatch(baseName)
+	if len(matchesSE) == 3 {
+		add(matchesSE[0])
+		sNum, _ := strconv.Atoi(matchesSE[1])
+		eNum, _ := strconv.Atoi(matchesSE[2])
+		add(fmt.Sprintf("S%02dE%02d", sNum, eNum))
+		add(fmt.Sprintf("S%dE%d", sNum, eNum))
+		add(fmt.Sprintf("%dx%02d", sNum, eNum))
+		add(fmt.Sprintf("E%02d", eNum))
+		add(fmt.Sprintf("E%03d", eNum))
+	}
+
+	reX := regexp.MustCompile(`(?i)\b(\d+)x(\d+)\b`)
+	matchesX := reX.FindStringSubmatch(baseName)
+	if len(matchesX) == 3 {
+		add(matchesX[0])
+		sNum, _ := strconv.Atoi(matchesX[1])
+		eNum, _ := strconv.Atoi(matchesX[2])
+		add(fmt.Sprintf("S%02dE%02d", sNum, eNum))
+		add(fmt.Sprintf("E%02d", eNum))
+	}
+
+	reEp := regexp.MustCompile(`(?i)\bEP?(\d+)\b`)
+	matchesEp := reEp.FindStringSubmatch(baseName)
+	if len(matchesEp) == 2 {
+		add(matchesEp[0])
+		eNum, _ := strconv.Atoi(matchesEp[1])
+		add(fmt.Sprintf("E%02d", eNum))
+		add(fmt.Sprintf("E%03d", eNum))
+	}
+
+	return codes
+}
+
+func isSubMatchingLanguage(subLang, subTitle, targetLang string) bool {
+	subLang = strings.ToLower(strings.TrimSpace(subLang))
+	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
+	subTitle = strings.ToLower(strings.TrimSpace(subTitle))
+
+	if subLang == targetLang {
+		return true
+	}
+
+	tokens := getLanguageTokens(targetLang)
+	for _, tok := range tokens {
+		lTok := strings.ToLower(tok)
+		if subLang == lTok {
+			return true
+		}
+		if subTitle != "" && strings.Contains(subTitle, lTok) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLanguageToken(filename string, targetLang string, tokens []string) bool {
+	fLower := strings.ToLower(filename)
+	ext := strings.ToLower(filepath.Ext(fLower))
+	fNoExt := strings.TrimSuffix(fLower, ext)
+
+	// Direct match if filename (without ext) is equal to one of the tokens (e.g. "vi", "vie", "vietnam")
+	for _, tok := range tokens {
+		lTok := strings.ToLower(tok)
+		if fNoExt == lTok {
+			return true
+		}
+	}
+
+	// Keywords match (long words >= 4 chars like "viet", "vietnamese", "vietsub", "vsub", "english", "engsub", "japanese")
+	for _, tok := range tokens {
+		lTok := strings.ToLower(tok)
+		if len(lTok) >= 4 && strings.Contains(fLower, lTok) {
+			return true
+		}
+	}
+
+	// Short token match (e.g. "vi", "en", "ja", "zh") with delimiter boundary
+	delims := []string{".", "_", "-", " ", "(", ")", "[", "]", "!"}
+	for _, tok := range tokens {
+		lTok := strings.ToLower(tok)
+		for _, dBefore := range delims {
+			for _, dAfter := range delims {
+				pattern := dBefore + lTok + dAfter
+				if strings.Contains(fLower, pattern) {
+					return true
+				}
+			}
+			if strings.HasSuffix(fNoExt, dBefore+lTok) {
+				return true
+			}
+			if strings.HasPrefix(fNoExt, lTok+dBefore) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func isSupportedSubtitleExtension(ext string) bool {
+	ext = strings.ToLower(ext)
+	switch ext {
+	case ".srt", ".ass", ".ssa", ".vtt", ".sub", ".sbv", ".smi", ".sami", ".ttml", ".dfxp", ".lrc":
+		return true
+	default:
+		return false
+	}
+}
+
+type candidateMatch struct {
+	path  string
+	score int
+}
+
 func findExternalSubtitleForLanguage(videoPath string, targetLang string, cfg *config.Config) (string, bool) {
 	dir := filepath.Dir(videoPath)
 	baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
 	targetLang = strings.ToLower(strings.TrimSpace(targetLang))
 
-	iso3 := targetLang
-	switch targetLang {
-	case "vi":
-		iso3 = "vie"
-	case "en":
-		iso3 = "eng"
-	case "ja":
-		iso3 = "jpn"
-	case "zh", "cn":
-		iso3 = "chi"
+	tokens := getLanguageTokens(targetLang)
+	epCodes := extractEpisodeCodes(baseName)
+
+	type searchDirInfo struct {
+		path         string
+		subDirTarget string
 	}
 
-	candidates := []string{
-		filepath.Join(dir, baseName+"."+targetLang+".srt"),
-		filepath.Join(dir, baseName+"."+iso3+".srt"),
-		filepath.Join(dir, baseName+"."+targetLang+".ass"),
-		filepath.Join(dir, baseName+"."+iso3+".ass"),
-		filepath.Join(dir, baseName+"_"+targetLang+".srt"),
-		filepath.Join(dir, baseName+"_"+iso3+".srt"),
-		filepath.Join(dir, baseName+"."+targetLang+".vtt"),
-		filepath.Join(dir, baseName+"."+iso3+".vtt"),
+	searchDirs := []searchDirInfo{
+		{path: dir},
+		{path: filepath.Join(dir, "Subs")},
+		{path: filepath.Join(dir, "subtitles")},
+		{path: filepath.Join(dir, "Sub")},
+		{path: filepath.Join(dir, "subtitle")},
+		{path: filepath.Join(dir, "Subs", baseName), subDirTarget: baseName},
+		{path: filepath.Join(dir, "subtitles", baseName), subDirTarget: baseName},
 	}
-
-	// Also check generic .srt / .ass without language code if targetLang matches cfg.SubLanguage or if targetLang == "vi"
-	if targetLang == "vi" || targetLang == strings.ToLower(strings.TrimSpace(cfg.SubLanguage)) {
-		candidates = append(candidates,
-			filepath.Join(dir, baseName+".srt"),
-			filepath.Join(dir, baseName+".ass"),
-			filepath.Join(dir, baseName+".vtt"),
+	for _, epCode := range epCodes {
+		searchDirs = append(searchDirs,
+			searchDirInfo{path: filepath.Join(dir, "Subs", epCode), subDirTarget: epCode},
+			searchDirInfo{path: filepath.Join(dir, "subtitles", epCode), subDirTarget: epCode},
 		)
 	}
 
-	for _, candidate := range candidates {
-		if utils.FileExists(candidate) {
-			return candidate, true
+	lowerBase := strings.ToLower(baseName)
+	var bestMatch candidateMatch
+
+	for _, sd := range searchDirs {
+		entries, err := os.ReadDir(sd.path)
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			fName := entry.Name()
+			fExt := strings.ToLower(filepath.Ext(fName))
+			if !isSupportedSubtitleExtension(fExt) {
+				continue
+			}
+
+			fLower := strings.ToLower(fName)
+			fNoExt := strings.TrimSuffix(fLower, fExt)
+			hasLang := hasLanguageToken(fName, targetLang, tokens)
+
+			score := 0
+
+			if strings.HasPrefix(fNoExt, lowerBase) && hasLang {
+				score = 100
+			} else if sd.subDirTarget != "" && hasLang {
+				score = 95
+			} else if hasLang && matchesAnyCode(fNoExt, epCodes) {
+				score = 85
+			} else if isStandaloneLang(fNoExt, tokens) {
+				score = 75
+			} else if (targetLang == "vi" || targetLang == strings.ToLower(strings.TrimSpace(cfg.SubLanguage))) &&
+				(strings.HasPrefix(fNoExt, lowerBase) || matchesAnyCode(fNoExt, epCodes)) {
+				score = 60
+			} else if hasLang {
+				score = 50
+			}
+
+			if score > bestMatch.score {
+				bestMatch = candidateMatch{
+					path:  filepath.Join(sd.path, fName),
+					score: score,
+				}
+				if score == 100 {
+					return bestMatch.path, true
+				}
+			}
 		}
 	}
+
+	if bestMatch.score > 0 {
+		return bestMatch.path, true
+	}
+
 	return "", false
+}
+
+func matchesAnyCode(fNoExt string, epCodes []string) bool {
+	for _, code := range epCodes {
+		lCode := strings.ToLower(code)
+		if strings.Contains(fNoExt, lCode) {
+			return true
+		}
+	}
+	return false
+}
+
+func isStandaloneLang(fNoExt string, tokens []string) bool {
+	for _, tok := range tokens {
+		if fNoExt == strings.ToLower(tok) {
+			return true
+		}
+	}
+	return false
 }
 
 func selectSubtitleForLanguage(videoPath string, videoInfo *media.VideoInfo, cfg *config.Config, targetLang string) SelectedSubtitle {
@@ -237,7 +453,7 @@ func selectSubtitleForLanguage(videoPath string, videoInfo *media.VideoInfo, cfg
 
 	// Priority 1: Embedded text subtitle matching targetLang
 	for _, sub := range videoInfo.EmbeddedSubStreams {
-		if sub.Language == targetLang {
+		if isSubMatchingLanguage(sub.Language, sub.Title, targetLang) {
 			if sub.IsBitmap {
 				fmt.Printf("    ⚠️ Skipping embedded subtitle track #%d (%s, lang: %s): Bitmap format (%s) cannot be extracted as text for TTS.\n", sub.SubIndex, sub.Title, sub.Language, sub.CodecName)
 				continue
@@ -500,6 +716,19 @@ func processSingleDubOnLocalFile(localVideoPath string, videoInfo *media.VideoIn
 			}
 		}
 		fmt.Println("    ✅ Embedded subtitle extracted successfully!")
+	} else {
+		// If external subtitle is NOT .srt (e.g. .ass, .ssa, .vtt, .sub, .sbv, etc.), convert to standard .srt
+		ext := strings.ToLower(filepath.Ext(extSubPath))
+		if ext != ".srt" {
+			convertedSrtPath := filepath.Join(localTempDir, "converted_"+baseName+"_"+targetLang+".srt")
+			fmt.Printf("    🔄 Converting external '%s' subtitle to standard SRT format...\n", ext)
+			if err := media.ConvertToSRT(extSubPath, convertedSrtPath); err != nil {
+				return fmt.Errorf("failed to convert external subtitle %s to SRT: %w", extSubPath, err)
+			}
+			extSubPath = convertedSrtPath
+			defer os.Remove(convertedSrtPath)
+			fmt.Println("    ✅ External subtitle converted to standard SRT successfully!")
+		}
 	}
 
 	// Define temporary file paths on local SSD

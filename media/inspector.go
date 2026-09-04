@@ -214,7 +214,7 @@ func PromptUserSelectSub(subs []EmbeddedSubInfo) *EmbeddedSubInfo {
 	}
 }
 
-// normalizeLanguage inspects stream tags to identify Vietnamese ("vi") or English ("en")
+// normalizeLanguage inspects stream tags to identify Vietnamese ("vi"), English ("en"), Japanese ("ja"), Chinese ("zh"), etc.
 func normalizeLanguage(tags map[string]string) string {
 	if tags == nil {
 		return "unknown"
@@ -233,12 +233,24 @@ func normalizeLanguage(tags map[string]string) string {
 	}
 
 	if langVal == "vie" || langVal == "vi" || langVal == "vietnamese" || langVal == "viet" ||
-		strings.Contains(titleVal, "viet") || strings.Contains(titleVal, "tiếng việt") || strings.Contains(titleVal, "thuyết minh") {
+		strings.Contains(titleVal, "viet") || strings.Contains(titleVal, "tiếng việt") || strings.Contains(titleVal, "tieng viet") ||
+		strings.Contains(titleVal, "thuyết minh") || strings.Contains(titleVal, "vietsub") || strings.Contains(titleVal, "vsub") {
 		return "vi"
 	}
 	if langVal == "eng" || langVal == "en" || langVal == "english" ||
-		strings.Contains(titleVal, "english") || strings.Contains(titleVal, "eng") {
+		strings.Contains(titleVal, "english") || strings.Contains(titleVal, "engsub") {
 		return "en"
+	}
+	if langVal == "jpn" || langVal == "ja" || langVal == "jp" || langVal == "japanese" ||
+		strings.Contains(titleVal, "japan") || strings.Contains(titleVal, "japsub") {
+		return "ja"
+	}
+	if langVal == "zho" || langVal == "chi" || langVal == "zh" || langVal == "cn" || langVal == "chinese" ||
+		strings.Contains(titleVal, "chinese") || strings.Contains(titleVal, "chinsub") {
+		return "zh"
+	}
+	if langVal != "" && langVal != "und" && langVal != "unk" && langVal != "unknown" && len(langVal) <= 3 {
+		return langVal
 	}
 	return "unknown"
 }
