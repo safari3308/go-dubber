@@ -5,6 +5,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +27,82 @@ func isSupportedVideoExtension(ext string) bool {
 	}
 }
 
-func main() {
-	cfg, err := config.LoadConfig("config.json")
+var chunkPattern = regexp.MustCompile(`(\d+|\D+)`)
+
+// naturalLess implements natural alphanumeric comparison for filenames (e.g. S01E02 before S01E10)
+func naturalLess(s1, s2 string) bool {
+	chunks1 := chunkPattern.FindAllString(strings.ToLower(s1), -1)
+	chunks2 := chunkPattern.FindAllString(strings.ToLower(s2), -1)
+
+	n := len(chunks1)
+	if len(chunks2) < n {
+		n = len(chunks2)
+	}
+
+	for i := 0; i < n; i++ {
+		c1, c2 := chunks1[i], chunks2[i]
+		if c1 == c2 {
+			continue
+		}
+
+		v1, err1 := strconv.ParseUint(c1, 10, 64)
+		v2, err2 := strconv.ParseUint(c2, 10, 64)
+
+		if err1 == nil && err2 == nil {
+			if v1 != v2 {
+				return v1 < v2
+			}
+			if len(c1) != len(c2) {
+				return len(c1) < len(c2)
+			}
+		} else {
+			return c1 < c2
+		}
+	}
+
+	return len(chunks1) < len(chunks2)
+}
+
+// discoverVideoFiles scans the NAS directory, filters out temp files, and returns naturally sorted video paths
+func discoverVideoFiles(nasDir string) ([]string, error) {
+	var videos []string
+	err := filepath.Walk(nasDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+
+		base := filepath.Base(path)
+		if strings.HasPrefix(base, "temp_") || strings.HasPrefix(base, ".upload_") || strings.HasPrefix(base, ".bak_") {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		if isSupportedVideoExtension(ext) {
+			videos = append(videos, path)
+		}
+		return nil
+	})
 	if err != nil {
-		log.Fatalf("❌ Failed to load config.json: %v", err)
+		return nil, err
+	}
+
+	sort.Slice(videos, func(i, j int) bool {
+		return naturalLess(filepath.Base(videos[i]), filepath.Base(videos[j]))
+	})
+
+	return videos, nil
+}
+
+// runDubbingSession executes one full pass of the pipeline and reports if the config was modified during execution
+func runDubbingSession(configPath string) (bool, error) {
+	initialChecksum, err := config.GetConfigFileChecksum(configPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to read config file checksum: %w", err)
+	}
+
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to load %s: %w", configPath, err)
 	}
 
 	fmt.Println("==================================================")
@@ -37,36 +112,66 @@ func main() {
 	fmt.Printf("⚙️ Mode: GPU=%v | ForceReprocess=%v | OnlyCheckKokoro=%v | TTSSpeed=%.2fx\n", cfg.UseGPU, cfg.ForceReprocess, cfg.OnlyCheckKokoro, cfg.TTSSpeed)
 	fmt.Println("==================================================")
 
+	// Pre-flight check on TTS server
+	if err := api.CheckServerHealth(cfg); err != nil {
+		fmt.Printf("⚠️ Warning: TTS API server is unreachable at %s: %v\n", cfg.ApiUrl, err)
+	}
+
 	// Automatically create local temporary directory on local SSD
 	localTempDir := "./temp"
 	if err := os.MkdirAll(localTempDir, 0755); err != nil {
-		log.Fatalf("❌ Failed to create local temp directory: %v", err)
+		return false, fmt.Errorf("failed to create local temp directory: %w", err)
 	}
+	defer os.RemoveAll(localTempDir)
 
-	err = filepath.Walk(cfg.NasDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-
-		ext := strings.ToLower(filepath.Ext(path))
-		if isSupportedVideoExtension(ext) {
-			if strings.HasPrefix(filepath.Base(path), "temp_") {
-				return nil
-			}
-			processVideo(path, cfg, localTempDir)
-		}
-		return nil
-	})
-
+	// Discover and sort all video files in NAS directory
+	videos, err := discoverVideoFiles(cfg.NasDir)
 	if err != nil {
 		log.Printf("❌ Error sweeping NAS directory: %v", err)
 	}
 
-	// Purge local temp workspace after processing
-	_ = os.RemoveAll(localTempDir)
+	if len(videos) == 0 {
+		fmt.Printf("ℹ️ No supported video files found in %s\n", cfg.NasDir)
+	} else {
+		fmt.Printf("🔍 Discovered %d video file(s) in NAS directory.\n", len(videos))
+		for _, videoPath := range videos {
+			processVideo(videoPath, cfg, localTempDir)
+		}
+	}
 
-	fmt.Println("\n🎉 COMPLETED ALL MEDIA PROCESSING JOBS.")
+	// Check if config has been changed during or upon completion of the run
+	currentChecksum, err := config.GetConfigFileChecksum(configPath)
+	if err == nil && currentChecksum != initialChecksum {
+		return true, nil
+	}
+
+	return false, nil
 }
+
+func main() {
+	configPath := config.ResolveConfigPath("config.json")
+	iteration := 1
+
+	for {
+		configChanged, err := runDubbingSession(configPath)
+		if err != nil {
+			log.Fatalf("❌ Error during pipeline execution: %v", err)
+		}
+
+		if !configChanged {
+			fmt.Println("\n🎉 COMPLETED ALL MEDIA PROCESSING JOBS.")
+			break
+		}
+
+		iteration++
+		fmt.Println("\n==================================================")
+		fmt.Println("🔄 CONFIG CHANGE DETECTED: 'config.json' has been updated!")
+		fmt.Printf("🔄 Automatically starting run #%d with the updated configuration...\n", iteration)
+		fmt.Println("==================================================")
+	}
+}
+
+
 
 type SelectedSubtitle struct {
 	SubPath       string

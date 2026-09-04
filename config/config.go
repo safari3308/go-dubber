@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -82,4 +85,38 @@ func LoadConfig(path string) (*Config, error) {
 	cfg.DubLanguages = normLangs
 
 	return &cfg, nil
+}
+
+// ResolveConfigPath locates config.json, first checking preferredPath,
+// then checking next to the executable if not found in the current working directory.
+func ResolveConfigPath(preferredPath string) string {
+	if preferredPath != "" {
+		if _, err := os.Stat(preferredPath); err == nil {
+			return preferredPath
+		}
+	}
+	if _, err := os.Stat("config.json"); err == nil {
+		return "config.json"
+	}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		candidate := filepath.Join(exeDir, "config.json")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if preferredPath != "" {
+		return preferredPath
+	}
+	return "config.json"
+}
+
+// GetConfigFileChecksum computes a SHA-256 checksum of the config file.
+func GetConfigFileChecksum(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }

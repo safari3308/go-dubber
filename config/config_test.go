@@ -136,3 +136,59 @@ func TestLoadConfig_DubLanguages(t *testing.T) {
 	}
 }
 
+func TestGetConfigFileChecksum(t *testing.T) {
+	tempDir := t.TempDir()
+	testPath := filepath.Join(tempDir, "test_config.json")
+
+	content1 := []byte(`{"nas_dir": "dir1"}`)
+	if err := os.WriteFile(testPath, content1, 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	hash1, err := GetConfigFileChecksum(testPath)
+	if err != nil {
+		t.Fatalf("GetConfigFileChecksum failed: %v", err)
+	}
+	if hash1 == "" {
+		t.Errorf("expected non-empty hash")
+	}
+
+	// Same content should yield identical hash
+	hash1Again, _ := GetConfigFileChecksum(testPath)
+	if hash1 != hash1Again {
+		t.Errorf("hash mismatch for identical content: %s vs %s", hash1, hash1Again)
+	}
+
+	// Modified content should yield different hash
+	content2 := []byte(`{"nas_dir": "dir2"}`)
+	if err := os.WriteFile(testPath, content2, 0644); err != nil {
+		t.Fatalf("failed to overwrite test file: %v", err)
+	}
+
+	hash2, err := GetConfigFileChecksum(testPath)
+	if err != nil {
+		t.Fatalf("GetConfigFileChecksum failed after edit: %v", err)
+	}
+	if hash1 == hash2 {
+		t.Errorf("expected different hash after content edit, got same %s", hash1)
+	}
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	tempDir := t.TempDir()
+	existingFile := filepath.Join(tempDir, "custom.json")
+	_ = os.WriteFile(existingFile, []byte(`{}`), 0644)
+
+	// Explicit existing path should be returned
+	got := ResolveConfigPath(existingFile)
+	if got != existingFile {
+		t.Errorf("ResolveConfigPath(%q) = %q; want %q", existingFile, got, existingFile)
+	}
+
+	// Non-existent path with no config.json in cwd falls back to preferred or config.json
+	fallback := ResolveConfigPath("non_existent.json")
+	if fallback == "" {
+		t.Errorf("ResolveConfigPath returned empty string")
+	}
+}
+
