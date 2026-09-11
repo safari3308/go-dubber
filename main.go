@@ -231,6 +231,8 @@ func extractEpisodeCodes(baseName string) []string {
 		add(fmt.Sprintf("%dx%02d", sNum, eNum))
 		add(fmt.Sprintf("E%02d", eNum))
 		add(fmt.Sprintf("E%03d", eNum))
+		add(fmt.Sprintf("EP%02d", eNum))
+		add(fmt.Sprintf("EP%03d", eNum))
 	}
 
 	reX := regexp.MustCompile(`(?i)\b(\d+)x(\d+)\b`)
@@ -241,6 +243,7 @@ func extractEpisodeCodes(baseName string) []string {
 		eNum, _ := strconv.Atoi(matchesX[2])
 		add(fmt.Sprintf("S%02dE%02d", sNum, eNum))
 		add(fmt.Sprintf("E%02d", eNum))
+		add(fmt.Sprintf("EP%02d", eNum))
 	}
 
 	reEp := regexp.MustCompile(`(?i)\bEP?(\d+)\b`)
@@ -250,9 +253,82 @@ func extractEpisodeCodes(baseName string) []string {
 		eNum, _ := strconv.Atoi(matchesEp[1])
 		add(fmt.Sprintf("E%02d", eNum))
 		add(fmt.Sprintf("E%03d", eNum))
+		add(fmt.Sprintf("EP%02d", eNum))
+		add(fmt.Sprintf("EP%03d", eNum))
 	}
 
 	return codes
+}
+
+func extractEpisodeNumbers(name string) (season int, episode int, found bool) {
+	// Pattern 1: S01E02 or S1E2 or S01.E02 or S01_E02 or S01 - E02
+	reSE := regexp.MustCompile(`(?i)(?:^|[^a-z0-9])S(\d{1,4})[\.\-_ ]*E(\d{1,4})(?:[^a-z0-9]|$)`)
+	if m := reSE.FindStringSubmatch(name); len(m) == 3 {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		return s, e, true
+	}
+
+	// Pattern 2: 1x02 or 01x02
+	reX := regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(\d{1,2})x(\d{1,4})(?:[^a-z0-9]|$)`)
+	if m := reX.FindStringSubmatch(name); len(m) == 3 {
+		s, _ := strconv.Atoi(m[1])
+		e, _ := strconv.Atoi(m[2])
+		return s, e, true
+	}
+
+	// Pattern 3: EP02, E02, Episode 02, Ep 02
+	reEp := regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:EP|E|Episode)[\.\-_ ]*(\d{1,4})(?:[^a-z0-9]|$)`)
+	if m := reEp.FindStringSubmatch(name); len(m) == 2 {
+		e, _ := strconv.Atoi(m[1])
+		return -1, e, true
+	}
+
+	return -1, -1, false
+}
+
+func hasEpisodeConflict(videoBase, subName string, subDirTarget string) bool {
+	vSeason, vEp, vHas := extractEpisodeNumbers(videoBase)
+	if !vHas {
+		// Video is not episodic (e.g. movie).
+		// If subtitle or subDirTarget has episode info (e.g. S01E01), it belongs to a TV show, not this movie!
+		sSeason, sEp, sHas := extractEpisodeNumbers(subName)
+		if sHas && (sSeason != -1 || sEp != -1) {
+			return true
+		}
+		if subDirTarget != "" {
+			dSeason, dEp, dHas := extractEpisodeNumbers(subDirTarget)
+			if dHas && (dSeason != -1 || dEp != -1) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Video is episodic (vHas == true, vEp != -1)
+	if subDirTarget != "" {
+		dSeason, dEp, dHas := extractEpisodeNumbers(subDirTarget)
+		if dHas {
+			if dEp != -1 && dEp != vEp {
+				return true
+			}
+			if dSeason != -1 && vSeason != -1 && dSeason != vSeason {
+				return true
+			}
+		}
+	}
+
+	sSeason, sEp, sHas := extractEpisodeNumbers(subName)
+	if sHas {
+		if sEp != -1 && sEp != vEp {
+			return true
+		}
+		if sSeason != -1 && vSeason != -1 && sSeason != vSeason {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isSubMatchingLanguage(subLang, subTitle, targetLang string) bool {
@@ -386,6 +462,12 @@ func findExternalSubtitleForLanguage(videoPath string, targetLang string, cfg *c
 
 			fLower := strings.ToLower(fName)
 			fNoExt := strings.TrimSuffix(fLower, fExt)
+
+			// Guard against episode or season mismatch
+			if hasEpisodeConflict(baseName, fNoExt, sd.subDirTarget) {
+				continue
+			}
+
 			hasLang := hasLanguageToken(fName, targetLang, tokens)
 
 			score := 0
@@ -401,8 +483,6 @@ func findExternalSubtitleForLanguage(videoPath string, targetLang string, cfg *c
 			} else if (targetLang == "vi" || targetLang == strings.ToLower(strings.TrimSpace(cfg.SubLanguage))) &&
 				(strings.HasPrefix(fNoExt, lowerBase) || matchesAnyCode(fNoExt, epCodes)) {
 				score = 60
-			} else if hasLang {
-				score = 50
 			}
 
 			if score > bestMatch.score {
@@ -424,10 +504,37 @@ func findExternalSubtitleForLanguage(videoPath string, targetLang string, cfg *c
 	return "", false
 }
 
+func matchWordBoundary(text, token string) bool {
+	tLen := len(token)
+	textLen := len(text)
+	if tLen == 0 || textLen < tLen {
+		return false
+	}
+	for i := 0; i <= textLen-tLen; i++ {
+		if text[i:i+tLen] == token {
+			if i > 0 {
+				prev := text[i-1]
+				if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+					continue
+				}
+			}
+			if i+tLen < textLen {
+				next := text[i+tLen]
+				if (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func matchesAnyCode(fNoExt string, epCodes []string) bool {
+	fLower := strings.ToLower(fNoExt)
 	for _, code := range epCodes {
 		lCode := strings.ToLower(code)
-		if strings.Contains(fNoExt, lCode) {
+		if matchWordBoundary(fLower, lCode) {
 			return true
 		}
 	}

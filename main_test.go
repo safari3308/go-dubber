@@ -158,6 +158,56 @@ func TestFindExternalSubtitleForLanguage(t *testing.T) {
 	}
 }
 
+func TestFindExternalSubtitleEpisodeConflict(t *testing.T) {
+	tempDir := t.TempDir()
+
+	ep11Video := filepath.Join(tempDir, "HELL MODE - The Hardcore Gamer Dominates in Another World with Garbage Balancing - S02E011 - TBA.mkv")
+	_ = os.WriteFile(ep11Video, []byte("dummy video"), 0644)
+
+	// Episode 4 subtitle in same directory (should NEVER match Episode 11)
+	ep04Sub := filepath.Join(tempDir, "HELL MODE - The Hardcore Gamer Dominates in Another World with Garbage Balancing - S02E004 - AN ORDER FROM THE PRINCE.vi.srt")
+	_ = os.WriteFile(ep04Sub, []byte("1\n00:00:01,000 --> 00:00:02,000\nEpisode 4\n"), 0644)
+
+	cfg := &config.Config{SubLanguage: "vi"}
+
+	// Must NOT select Episode 4 subtitle for Episode 11
+	foundPath, found := findExternalSubtitleForLanguage(ep11Video, "vi", cfg)
+	if found {
+		t.Fatalf("findExternalSubtitleForLanguage should NOT find sub for ep11, but got %q (ep4 sub)", foundPath)
+	}
+
+	// Now create matching Episode 11 subtitle
+	ep11Sub := filepath.Join(tempDir, "HELL MODE - The Hardcore Gamer Dominates in Another World with Garbage Balancing - S02E011 - TBA.vi.srt")
+	_ = os.WriteFile(ep11Sub, []byte("1\n00:00:01,000 --> 00:00:02,000\nEpisode 11\n"), 0644)
+
+	foundPath, found = findExternalSubtitleForLanguage(ep11Video, "vi", cfg)
+	if !found {
+		t.Fatalf("findExternalSubtitleForLanguage failed to find ep11 sub")
+	} else if filepath.Clean(foundPath) != filepath.Clean(ep11Sub) {
+		t.Fatalf("findExternalSubtitleForLanguage = %q, want %q", foundPath, ep11Sub)
+	}
+}
+
+func TestEpisodeBoundaryMatching(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Episode 1 video
+	ep01Video := filepath.Join(tempDir, "Anime - S01E01 - Pilot.mkv")
+	_ = os.WriteFile(ep01Video, []byte("dummy"), 0644)
+
+	// Episode 11 subtitle containing "E011" or "S01E011"
+	ep11Sub := filepath.Join(tempDir, "Anime - S01E011 - Climax.vi.srt")
+	_ = os.WriteFile(ep11Sub, []byte("dummy sub"), 0644)
+
+	cfg := &config.Config{SubLanguage: "vi"}
+
+	// Ep 1 video should not falsely match Ep 11 subtitle just because "E01" is a substring of "E011"
+	_, found := findExternalSubtitleForLanguage(ep01Video, "vi", cfg)
+	if found {
+		t.Fatalf("Ep01 video falsely matched Ep11 subtitle due to substring containment")
+	}
+}
+
 func TestSelectSubtitleForLanguagePriority(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "sub_select_*")
 	if err != nil {
