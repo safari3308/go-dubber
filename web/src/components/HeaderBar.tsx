@@ -1,0 +1,189 @@
+import {
+  Cpu,
+  FolderPlus,
+  Pause,
+  Play,
+  RefreshCw,
+  Settings,
+  Square,
+  Wifi,
+  WifiOff,
+  Recycle,
+} from 'lucide-react';
+import type { HardwareProfile, RunnerStatus, TTSHealthStatus } from '../types/api';
+
+interface HeaderBarProps {
+  runnerStatus: RunnerStatus;
+  reuseAudioChunks: boolean;
+  ttsStatus: TTSHealthStatus | null;
+  hardware: HardwareProfile | null;
+  checkingTTS: boolean;
+  hasPendingJobs: boolean;
+  onToggleReuseChunks: (val: boolean) => void;
+  onStart: () => void;
+  onPause: () => void;
+  onStop: () => void;
+  onOpenBrowser: () => void;
+  onOpenSettings: () => void;
+  onCheckTTS: () => void;
+}
+
+export function HeaderBar({
+  runnerStatus,
+  reuseAudioChunks,
+  ttsStatus,
+  hardware,
+  checkingTTS,
+  hasPendingJobs,
+  onToggleReuseChunks,
+  onStart,
+  onPause,
+  onStop,
+  onOpenBrowser,
+  onOpenSettings,
+  onCheckTTS,
+}: HeaderBarProps) {
+  const isRunning = runnerStatus === 'running';
+  const isPaused = runnerStatus === 'paused';
+  const isTransitioning = runnerStatus === 'pausing' || runnerStatus === 'stopping';
+
+  return (
+    <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-3.5 sm:px-6">
+        {/* Brand + Status Pills */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-400 ring-1 ring-indigo-500/30">
+              <Play className="h-4 w-4 fill-current" />
+            </div>
+            <div>
+              <h1 className="text-base font-semibold tracking-tight text-white">Go-Dubber</h1>
+              <p className="text-xs text-slate-400">AI Media Dubbing Studio</p>
+            </div>
+          </div>
+
+          <div className="h-6 w-px bg-slate-800 hidden sm:block" />
+
+          {/* TTS Health Pill */}
+          <button
+            type="button"
+            onClick={onCheckTTS}
+            title={ttsStatus?.error || `TTS Server: ${ttsStatus?.url || 'checking...'}`}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
+              ttsStatus?.available
+                ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30 hover:bg-emerald-500/20'
+                : 'bg-rose-500/10 text-rose-300 ring-rose-500/30 hover:bg-rose-500/20'
+            }`}
+          >
+            {ttsStatus?.available ? (
+              <Wifi className="h-3.5 w-3.5" />
+            ) : (
+              <WifiOff className="h-3.5 w-3.5" />
+            )}
+            <span>
+              TTS {ttsStatus?.available ? `Online (${ttsStatus.latency_ms}ms)` : 'Offline'}
+            </span>
+            <RefreshCw className={`h-3 w-3 opacity-70 ${checkingTTS ? 'animate-spin' : ''}`} />
+          </button>
+
+          {/* Detected Hardware Badge */}
+          {hardware && (
+            <div
+              title={`Detected ${hardware.os}/${hardware.arch} (${hardware.cpu_cores} cores) • Available: ${hardware.available_encoders?.join(', ')}`}
+              className="inline-flex items-center gap-1.5 rounded-full bg-slate-800/80 px-3 py-1 text-xs font-medium text-slate-300 ring-1 ring-slate-700"
+            >
+              <Cpu className="h-3.5 w-3.5 text-sky-400" />
+              <span>{hardware.encoder_label}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Controls */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Reuse Audio Chunks Toggle */}
+          <label
+            title="Reuse cached TTS audio chunks from previous or paused runs instead of re-synthesizing"
+            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-700"
+          >
+            <Recycle className={`h-3.5 w-3.5 ${reuseAudioChunks ? 'text-emerald-400' : 'text-slate-500'}`} />
+            <span className="select-none">Reuse Chunks</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={reuseAudioChunks}
+              onClick={() => onToggleReuseChunks(!reuseAudioChunks)}
+              className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                reuseAudioChunks ? 'bg-emerald-500' : 'bg-slate-700'
+              }`}
+            >
+              <span
+                className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                  reuseAudioChunks ? 'translate-x-3.5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </label>
+
+          {/* Add Files / Folders */}
+          <button
+            type="button"
+            onClick={onOpenBrowser}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 ring-1 ring-slate-700 transition hover:bg-slate-700"
+          >
+            <FolderPlus className="h-3.5 w-3.5 text-indigo-400" />
+            Add Files / Folder
+          </button>
+
+          {/* Start / Resume */}
+          {!isRunning && (
+            <button
+              type="button"
+              disabled={isTransitioning || !hasPendingJobs}
+              onClick={onStart}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+              {isPaused ? 'Resume Queue' : 'Start Queue'}
+            </button>
+          )}
+
+          {/* Pause */}
+          {isRunning && (
+            <button
+              type="button"
+              disabled={isTransitioning}
+              onClick={onPause}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-300 ring-1 ring-amber-500/40 transition hover:bg-amber-500/30 disabled:opacity-40"
+            >
+              <Pause className="h-3.5 w-3.5" />
+              Pause
+            </button>
+          )}
+
+          {/* Stop */}
+          {(isRunning || isPaused || isTransitioning) && (
+            <button
+              type="button"
+              disabled={runnerStatus === 'stopping'}
+              onClick={onStop}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-3 py-1.5 text-xs font-semibold text-rose-300 ring-1 ring-rose-500/40 transition hover:bg-rose-500/30 disabled:opacity-40"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+              Stop
+            </button>
+          )}
+
+          {/* Global Settings */}
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            title="Global Settings & Hardware Profile"
+            className="inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 p-1.5 text-slate-300 transition hover:bg-slate-800 hover:text-white"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}

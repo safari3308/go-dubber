@@ -34,3 +34,10 @@ temp
 local_dub_scratch
 config.json
 dist/
+workdir/
+bin/
+nas_dubber
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+*.tsbuildinfo
