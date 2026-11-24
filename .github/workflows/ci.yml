@@ -30,8 +30,10 @@ jobs:
 
       - name: Build React SPA
         working-directory: web
+        env:
+          npm_config_onnxruntime_node_install_cuda: skip
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
 
       - name: Setup Go
