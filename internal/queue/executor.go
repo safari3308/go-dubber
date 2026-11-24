@@ -61,14 +61,33 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	effCfg.UseGPU = useGPU
 	effCfg.FFmpeg = resolvedFF
 
-	// 1. Check TTS server availability before doing work
+	// 1. Check TTS server availability (with in-browser KokoroJS fallback for English)
+	remoteTTSAvailable := false
+	var remoteTTSErr string
 	if mon := mgr.TTSMonitor(); mon != nil {
 		st := mon.CheckNow(ctx)
-		if !st.Available {
-			return fmt.Errorf("TTS server unavailable (%s): %s", st.URL, st.Error)
+		remoteTTSAvailable = st.Available
+		remoteTTSErr = st.Error
+	} else if err := tts.CheckServerHealthContext(ctx, &effCfg); err == nil {
+		remoteTTSAvailable = true
+	} else {
+		remoteTTSErr = err.Error()
+	}
+
+	browserBridge := mgr.BrowserTTS()
+	useBrowserForEN := !remoteTTSAvailable && browserBridge != nil && browserBridge.IsReady()
+
+	if !remoteTTSAvailable {
+		if !useBrowserForEN {
+			return fmt.Errorf("TTS server unavailable (%s): %s (enable Browser EN KokoroJS in header for local English fallback)", effCfg.ApiUrl, remoteTTSErr)
 		}
-	} else if err := tts.CheckServerHealthContext(ctx, &effCfg); err != nil {
-		return fmt.Errorf("TTS server unavailable: %w", err)
+		// Ensure all requested languages are English when relying on Browser KokoroJS
+		for _, l := range effCfg.DubLanguages {
+			if strings.ToLower(strings.TrimSpace(l)) != "en" {
+				return fmt.Errorf("remote TTS server is offline and Browser KokoroJS fallback only supports English (en), not %q", l)
+			}
+		}
+		logInfo("Remote TTS offline — using In-Browser KokoroJS (WebGPU/WASM) fallback for English!")
 	}
 
 	// 2. Inspect source video metadata
@@ -97,13 +116,26 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		_ = ws.SaveState(state)
 	}
 
-	// Build language dub specs (use per-item specs if configured, otherwise resolve automatically)
-	specs := job.Config.LanguageSpecs
-	if len(specs) == 0 {
-		for _, lang := range effCfg.DubLanguages {
-			if spec := subtitle.ResolveDualSubtitle(job.SourcePath, videoInfo.EmbeddedSubStreams, &effCfg, lang); spec != nil {
-				specs = append(specs, *spec)
-			}
+	// Build language dub specs filtered to the languages ticked in effCfg.DubLanguages
+	enabledLangs := make(map[string]bool, len(effCfg.DubLanguages))
+	for _, l := range effCfg.DubLanguages {
+		enabledLangs[strings.ToLower(strings.TrimSpace(l))] = true
+	}
+
+	var specs []subtitle.LanguageDubSpec
+	specByLang := make(map[string]subtitle.LanguageDubSpec)
+	for _, sp := range job.Config.LanguageSpecs {
+		specByLang[strings.ToLower(strings.TrimSpace(sp.Language))] = sp
+	}
+	for _, lang := range effCfg.DubLanguages {
+		normLang := strings.ToLower(strings.TrimSpace(lang))
+		if !enabledLangs[normLang] {
+			continue
+		}
+		if sp, ok := specByLang[normLang]; ok && sp.TTSSub.IsValid() {
+			specs = append(specs, sp)
+		} else if resolved := subtitle.ResolveDualSubtitle(job.SourcePath, videoInfo.EmbeddedSubStreams, &effCfg, normLang); resolved != nil {
+			specs = append(specs, *resolved)
 		}
 	}
 
@@ -111,10 +143,6 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	for _, spec := range specs {
 		if state.HasCompletedLang(spec.Language) {
 			logInfo(fmt.Sprintf("Skipping '%s': already completed in local workdir.", spec.Language))
-			continue
-		}
-		if !effCfg.ForceReprocess && videoInfo.HasAudioLanguage(spec.Language) {
-			logInfo(fmt.Sprintf("Skipping '%s': video already contains '%s' audio track.", spec.Language, spec.Language))
 			continue
 		}
 		if !spec.TTSSub.IsValid() {
@@ -130,21 +158,30 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		return nil
 	}
 
-	// 3. Ensure local SSD video copy (skip re-copying if already intact in workdir!)
+	// 3. Ensure local SSD video path:
+	//    - If source is already on a local disk (not SMB/NFS/NAS), read directly & skip downloading!
+	//    - If source is on NAS, reuse verified local SSD copy if present, otherwise download once.
+	if err := ws.EnsureJobDirs(job.ID); err != nil {
+		return err
+	}
+	isLocalSource := textutil.IsLocalPath(job.SourcePath)
 	localVideoPath, hasValidCopy := ws.HasValidLocalCopy(job.ID, job.SourcePath)
-	if hasValidCopy {
-		logInfo(fmt.Sprintf("Reusing existing verified local SSD copy: %s (skipped NAS download!)", filepath.Base(localVideoPath)))
+
+	switch {
+	case hasValidCopy:
+		logInfo(fmt.Sprintf("Reusing existing verified local SSD copy: %s (skipped download!)", filepath.Base(localVideoPath)))
 		mgr.UpdateJobProgress(job.ID, JobDownloading, "downloading", 15, "Reused verified local video copy")
-	} else {
-		if err := ws.EnsureJobDirs(job.ID); err != nil {
-			return err
-		}
+	case isLocalSource:
+		localVideoPath = job.SourcePath
+		logInfo(fmt.Sprintf("Local file detected (%s) — skipping download and reading directly from local disk!", job.FileName))
+		mgr.UpdateJobProgress(job.ID, JobDownloading, "downloading", 15, "Local file detected — skipped download")
+	default:
 		localVideoPath = ws.LocalVideoPath(job.ID, job.SourcePath)
 		state.LocalVideoFile = filepath.Base(localVideoPath)
 		state.Stage = "downloading"
 		_ = ws.SaveState(state)
 
-		logInfo(fmt.Sprintf("Downloading %s to local SSD...", job.FileName))
+		logInfo(fmt.Sprintf("Network/NAS file detected — downloading %s to local SSD...", job.FileName))
 		lastEmit := time.Now()
 		err = textutil.CopyFileContext(ctx, job.SourcePath, localVideoPath, func(copied, total int64) {
 			if total > 0 && time.Since(lastEmit) > 500*time.Millisecond {
@@ -221,7 +258,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			}
 		}
 
-		// 4d. Parallel TTS synthesis with chunk reuse
+		// 4d. Parallel TTS synthesis with chunk reuse (or Browser KokoroJS fallback for English)
 		state.Stage = "synthesizing"
 		_ = ws.SaveState(state)
 		ttsWavPath := filepath.Join(ws.JobDir(job.ID), fmt.Sprintf("tts_%s.wav", lang))
@@ -233,15 +270,25 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			},
 		}
 
+		ttsCfg := effCfg
+		var customRenderer media.TTSLineRenderer
+		if useBrowserForEN && strings.ToLower(strings.TrimSpace(lang)) == "en" {
+			ttsCfg.Workers = 1 // Keep browser WebGPU/WASM inference sequential for stability
+			customRenderer = func(rCtx context.Context, c *config.Config, text, _ string, _ string) ([]byte, error) {
+				return browserBridge.Synthesize(rCtx, text, c.TTSSpeed)
+			}
+		}
+
 		totalLines, err := media.ProcessDubbingPipelineContext(
 			ctx,
-			&effCfg,
+			&ttsCfg,
 			ttsSrtPath,
 			ttsWavPath,
 			media.DubbingPipelineOptions{
 				ChunksDir:        chunksDir,
 				ReuseAudioChunks: reuseChunks,
 				KeepChunks:       true, // Cleaned up only after NAS upload succeeds
+				TTSRenderer:      customRenderer,
 			},
 			lang,
 			localInfo.Duration,
@@ -258,18 +305,36 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		mgr.UpdateJobProgress(job.ID, JobRemuxing, "remuxing", basePct+langSpan*0.80, fmt.Sprintf("[%s] Remuxing video & embedding subtitle...", lang))
 
 		outTempVideo := filepath.Join(ws.JobDir(job.ID), "out_"+filepath.Base(localVideoPath))
-		if err := media.RemuxVideoContext(ctx, &effCfg, localVideoPath, ttsWavPath, embedSubPath, outTempVideo, localInfo, isExternalEmbed, lang); err != nil {
+		remuxOpts := media.RemuxOptions{
+			ReplaceAudioIndex: spec.ReplaceAudioIndex,
+		}
+		if job.Config.SourceAudioIndex != nil {
+			if *job.Config.SourceAudioIndex < 0 {
+				remuxOpts.NoBackgroundAudio = true
+			} else {
+				remuxOpts.OriginalAudioIndex = job.Config.SourceAudioIndex
+			}
+		} else if localInfo.AudioTrackCount == 0 {
+			remuxOpts.NoBackgroundAudio = true
+		}
+
+		if err := media.RemuxVideoWithOptions(ctx, &effCfg, localVideoPath, ttsWavPath, embedSubPath, outTempVideo, localInfo, isExternalEmbed, lang, remuxOpts); err != nil {
 			_ = os.Remove(outTempVideo)
 			return err
 		}
 		_ = os.Remove(ttsWavPath)
 
-		if err := os.Rename(outTempVideo, localVideoPath); err != nil {
-			if copyErr := textutil.CopyFileContext(ctx, outTempVideo, localVideoPath, nil); copyErr != nil {
+		// Move remuxed output to the job's working file inside workdir (never overwriting original SourcePath mid-pipeline)
+		workVideoPath := ws.LocalVideoPath(job.ID, job.SourcePath)
+		if err := os.Rename(outTempVideo, workVideoPath); err != nil {
+			if copyErr := textutil.CopyFileContext(ctx, outTempVideo, workVideoPath, nil); copyErr != nil {
 				return fmt.Errorf("failed to update local video asset: %w", copyErr)
 			}
 			_ = os.Remove(outTempVideo)
 		}
+		localVideoPath = workVideoPath
+		state.LocalVideoFile = filepath.Base(workVideoPath)
+		state.LocalCopyReady = true
 
 		state.MarkLangCompleted(lang)
 		_ = ws.SaveState(state)

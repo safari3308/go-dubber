@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -87,11 +89,13 @@ func (s *Server) Handler() http.Handler {
 	// Server Filesystem Browser & Media Inspector
 	mux.HandleFunc("GET /api/fs/browse", s.handleFSBrowse)
 	mux.HandleFunc("POST /api/fs/inspect", s.handleFSInspect)
+	mux.HandleFunc("POST /api/fs/extract-subtitle", s.handleFSExtractSubtitle)
 
 	// Queue Management & Lifecycle Controls
 	mux.HandleFunc("GET /api/queue", s.handleGetQueue)
 	mux.HandleFunc("POST /api/queue/items", s.handleAddQueueItems)
 	mux.HandleFunc("PATCH /api/queue/items/{id}", s.handleUpdateQueueItem)
+	mux.HandleFunc("POST /api/queue/items/{id}/subtitles", s.handleUploadQueueSubtitle)
 	mux.HandleFunc("DELETE /api/queue/items/{id}", s.handleDeleteQueueItem)
 	mux.HandleFunc("POST /api/queue/reorder", s.handleReorderQueue)
 	mux.HandleFunc("POST /api/queue/start", s.handleQueueStart)
@@ -103,6 +107,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/recovery", s.handleGetRecovery)
 	mux.HandleFunc("POST /api/recovery/{id}/resume", s.handleResumeRecovery)
 	mux.HandleFunc("DELETE /api/recovery/{id}", s.handleDiscardRecovery)
+
+	// In-Browser KokoroJS English TTS Fallback Bridge
+	mux.HandleFunc("GET /api/browser-tts/status", s.handleGetBrowserTTSStatus)
+	mux.HandleFunc("POST /api/browser-tts/status", s.handleSetBrowserTTSStatus)
+	mux.HandleFunc("POST /api/browser-tts/result/{id}", s.handleBrowserTTSResult)
 
 	// Embedded React SPA
 	if s.webFS != nil {
@@ -265,9 +274,19 @@ func (s *Server) handleFSInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.GetConfig()
-	langs := req.Languages
-	if len(langs) == 0 {
-		langs = cfg.DubLanguages
+	langs := queue.SupportedTTSLanguages
+	if len(req.Languages) > 0 {
+		// Always ensure en and vi are included for dual-subtitle discovery
+		seen := make(map[string]bool)
+		var merged []string
+		for _, l := range append(append([]string(nil), req.Languages...), queue.SupportedTTSLanguages...) {
+			norm := strings.ToLower(strings.TrimSpace(l))
+			if norm != "" && !seen[norm] {
+				seen[norm] = true
+				merged = append(merged, norm)
+			}
+		}
+		langs = merged
 	}
 
 	candidatesByLang := make(map[string][]subtitle.CandidateSubtitle)
@@ -284,6 +303,164 @@ func (s *Server) handleFSInspect(w http.ResponseWriter, r *http.Request) {
 		"external_subtitles": candidatesByLang,
 		"resolved_specs":     resolvedSpecs,
 	})
+}
+
+func (s *Server) handleFSExtractSubtitle(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path     string `json:"path"`
+		SubIndex int    `json:"sub_index"`
+		Format   string `json:"format"` // "original" or "srt"
+		AsJSON   bool   `json:"as_json"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	videoPath := textutil.SanitizePath(req.Path)
+
+	info, err := media.InspectVideo(videoPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to inspect video: "+err.Error())
+		return
+	}
+
+	var matched *media.EmbeddedSubInfo
+	for i := range info.EmbeddedSubStreams {
+		if info.EmbeddedSubStreams[i].SubIndex == req.SubIndex {
+			matched = &info.EmbeddedSubStreams[i]
+			break
+		}
+	}
+	if matched == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("embedded subtitle track #%d not found", req.SubIndex))
+		return
+	}
+	if matched.IsBitmap {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("subtitle track #%d is a bitmap format (%s) and cannot be extracted as text", req.SubIndex, matched.CodecName))
+		return
+	}
+
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	ext := ".srt"
+	useCopy := false
+	if format == "original" {
+		switch strings.ToLower(matched.CodecName) {
+		case "ass":
+			ext = ".ass"
+			useCopy = true
+		case "ssa":
+			ext = ".ssa"
+			useCopy = true
+		case "webvtt", "vtt":
+			ext = ".vtt"
+			useCopy = true
+		case "subrip", "srt":
+			ext = ".srt"
+			useCopy = true
+		}
+	}
+
+	tmpDir, err := os.MkdirTemp("", "godubber-extract-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	base := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
+	langTag := matched.Language
+	if langTag == "" || langTag == "unknown" {
+		langTag = fmt.Sprintf("track%d", matched.SubIndex)
+	}
+	outName := fmt.Sprintf("%s.%s%s", base, langTag, ext)
+	outPath := filepath.Join(tmpDir, "extracted"+ext)
+
+	if useCopy {
+		err = media.ExtractEmbeddedSubtitleCopyContext(r.Context(), videoPath, outPath, req.SubIndex)
+	} else {
+		err = media.ExtractEmbeddedSubtitleContext(r.Context(), videoPath, outPath, req.SubIndex)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if req.AsJSON {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"filename": outName,
+			"format":   strings.TrimPrefix(ext, "."),
+			"content":  string(data),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, outName))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleUploadQueueSubtitle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse multipart upload: "+err.Error())
+		return
+	}
+
+	lang := strings.ToLower(strings.TrimSpace(r.FormValue("language")))
+	role := strings.ToLower(strings.TrimSpace(r.FormValue("role")))
+	if lang == "" {
+		lang = "vi"
+	}
+	if role == "" {
+		role = "both"
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "subtitle file is required")
+		return
+	}
+	defer file.Close()
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if !subtitle.IsSupportedSubtitleExtension(ext) {
+		writeError(w, http.StatusBadRequest, "unsupported subtitle file extension: "+ext)
+		return
+	}
+
+	if err := s.ws.EnsureJobDirs(id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to prepare job subs dir: "+err.Error())
+		return
+	}
+
+	safeName := filepath.Base(header.Filename)
+	destPath := filepath.Join(s.ws.SubsDir(id), fmt.Sprintf("uploaded_%s_%s", lang, safeName))
+	out, err := os.Create(destPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save subtitle: "+err.Error())
+		return
+	}
+	if _, err := io.Copy(out, file); err != nil {
+		out.Close()
+		writeError(w, http.StatusInternalServerError, "failed to write subtitle: "+err.Error())
+		return
+	}
+	out.Close()
+
+	updated, err := s.queue.AttachUploadedSubtitle(id, lang, role, destPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.broker.Notify("success", "Subtitle Attached", fmt.Sprintf("Attached %s (%s) to %s", safeName, strings.ToUpper(lang), updated.FileName))
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleGetQueue(w http.ResponseWriter, r *http.Request) {
@@ -422,6 +599,53 @@ func (s *Server) handleDiscardRecovery(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broker.Notify("info", "Workdir Cleaned", "Discarded unfinished temporary files for "+id)
 	writeJSON(w, http.StatusOK, map[string]string{"discarded": id})
+}
+
+func (s *Server) handleGetBrowserTTSStatus(w http.ResponseWriter, r *http.Request) {
+	bridge := s.queue.BrowserTTS()
+	if bridge == nil {
+		writeJSON(w, http.StatusOK, tts.BrowserTTSStatus{Ready: false})
+		return
+	}
+	writeJSON(w, http.StatusOK, bridge.Status())
+}
+
+func (s *Server) handleSetBrowserTTSStatus(w http.ResponseWriter, r *http.Request) {
+	bridge := s.queue.BrowserTTS()
+	if bridge == nil {
+		writeError(w, http.StatusServiceUnavailable, "browser TTS bridge not configured")
+		return
+	}
+	var st tts.BrowserTTSStatus
+	if err := json.NewDecoder(r.Body).Decode(&st); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid browser TTS status payload")
+		return
+	}
+	bridge.SetStatus(st)
+	s.broker.Publish("browser_tts_status", st)
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleBrowserTTSResult(w http.ResponseWriter, r *http.Request) {
+	bridge := s.queue.BrowserTTS()
+	if bridge == nil {
+		writeError(w, http.StatusServiceUnavailable, "browser TTS bridge not configured")
+		return
+	}
+	reqID := r.PathValue("id")
+	errMsg := r.Header.Get("X-TTS-Error")
+	if errMsg != "" {
+		bridge.Complete(reqID, nil, errMsg)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "error_recorded"})
+		return
+	}
+	wavBytes, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read WAV body")
+		return
+	}
+	bridge.Complete(reqID, wavBytes, "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) spaHandler() http.Handler {

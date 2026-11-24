@@ -1,25 +1,33 @@
 import {
   Cpu,
   FolderPlus,
+  Loader2,
   Pause,
   Play,
   RefreshCw,
   Settings,
+  Sparkles,
   Square,
   Wifi,
   WifiOff,
   Recycle,
 } from 'lucide-react';
+import type { BrowserKokoroState } from '../hooks/useBrowserKokoro';
 import type { HardwareProfile, RunnerStatus, TTSHealthStatus } from '../types/api';
 
 interface HeaderBarProps {
   runnerStatus: RunnerStatus;
   reuseAudioChunks: boolean;
   ttsStatus: TTSHealthStatus | null;
+  browserKokoroState: BrowserKokoroState;
+  browserKokoroProgress: number;
+  browserKokoroDevice: string;
+  browserKokoroError: string;
   hardware: HardwareProfile | null;
   checkingTTS: boolean;
   hasPendingJobs: boolean;
   onToggleReuseChunks: (val: boolean) => void;
+  onToggleBrowserKokoro: () => void;
   onStart: () => void;
   onPause: () => void;
   onStop: () => void;
@@ -32,10 +40,15 @@ export function HeaderBar({
   runnerStatus,
   reuseAudioChunks,
   ttsStatus,
+  browserKokoroState,
+  browserKokoroProgress,
+  browserKokoroDevice,
+  browserKokoroError,
   hardware,
   checkingTTS,
   hasPendingJobs,
   onToggleReuseChunks,
+  onToggleBrowserKokoro,
   onStart,
   onPause,
   onStop,
@@ -84,6 +97,40 @@ export function HeaderBar({
               TTS {ttsStatus?.available ? `Online (${ttsStatus.latency_ms}ms)` : 'Offline'}
             </span>
             <RefreshCw className={`h-3 w-3 opacity-70 ${checkingTTS ? 'animate-spin' : ''}`} />
+          </button>
+
+          {/* In-Browser KokoroJS English Fallback Pill */}
+          <button
+            type="button"
+            onClick={onToggleBrowserKokoro}
+            title={
+              browserKokoroError ||
+              'Run Kokoro-82M (ONNX) directly in this browser tab as an offline English TTS fallback'
+            }
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
+              browserKokoroState === 'ready'
+                ? 'bg-violet-500/15 text-violet-200 ring-violet-500/40 hover:bg-violet-500/25'
+                : browserKokoroState === 'loading'
+                ? 'bg-amber-500/15 text-amber-200 ring-amber-500/40'
+                : browserKokoroState === 'error'
+                ? 'bg-rose-500/15 text-rose-300 ring-rose-500/40'
+                : 'bg-slate-800/80 text-slate-400 ring-slate-700 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            {browserKokoroState === 'loading' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            <span>
+              {browserKokoroState === 'ready'
+                ? `Browser EN (${browserKokoroDevice.toUpperCase()})`
+                : browserKokoroState === 'loading'
+                ? `Loading EN ${browserKokoroProgress}%`
+                : browserKokoroState === 'error'
+                ? 'Browser EN Error'
+                : 'Browser EN: Off'}
+            </span>
           </button>
 
           {/* Detected Hardware Badge */}

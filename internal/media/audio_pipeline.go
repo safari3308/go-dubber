@@ -16,11 +16,15 @@ import (
 	"github.com/safari3308/go-dubber/internal/tts"
 )
 
+// TTSLineRenderer synthesizes a single dialogue line into WAV bytes.
+type TTSLineRenderer func(ctx context.Context, cfg *config.Config, text, lang, role string) ([]byte, error)
+
 // DubbingPipelineOptions configures chunk caching and cancellation behavior.
 type DubbingPipelineOptions struct {
-	ChunksDir        string // Explicit directory for chunk_*.wav; if empty, uses localTempDir/chunks_<wav>
-	ReuseAudioChunks bool   // When true, reuse existing valid chunk_*.wav files; when false, discard them before synthesis
-	KeepChunks       bool   // When true, keep chunk_*.wav files after packaging (cleaned up only after NAS upload)
+	ChunksDir        string          // Explicit directory for chunk_*.wav; if empty, uses localTempDir/chunks_<wav>
+	ReuseAudioChunks bool            // When true, reuse existing valid chunk_*.wav files; when false, discard them before synthesis
+	KeepChunks       bool            // When true, keep chunk_*.wav files after packaging (cleaned up only after NAS upload)
+	TTSRenderer      TTSLineRenderer // Optional custom renderer (e.g. in-browser kokoro-js fallback); defaults to tts.RenderSingleLineTTSContext
 }
 
 // ExtractPCMFromWAV finds the exact position of the 'data' chunk in WAV (handles any Header length).
@@ -179,9 +183,13 @@ func ProcessDubbingPipelineContext(ctx context.Context, cfg *config.Config, srtP
 					}
 				}
 				if !reused {
-					wavData, err := tts.RenderSingleLineTTSContext(ctx, cfg, job.Entry.Text, lang, "A")
+					renderFn := opts.TTSRenderer
+					if renderFn == nil {
+						renderFn = tts.RenderSingleLineTTSContext
+					}
+					wavData, err := renderFn(ctx, cfg, job.Entry.Text, lang, "A")
 					if err != nil && ctx.Err() == nil {
-						wavData, err = tts.RenderSingleLineTTSContext(ctx, cfg, job.Entry.Text, lang, "A")
+						wavData, err = renderFn(ctx, cfg, job.Entry.Text, lang, "A")
 					}
 					if ctx.Err() != nil {
 						return

@@ -73,6 +73,11 @@ export interface EmbeddedSubInfo {
 
 export interface AudioStreamDetails {
   audio_index: number;
+  stream_idx: number;
+  codec_name: string;
+  channels: number;
+  language: string;
+  title: string;
   is_kokoro: boolean;
   tags: Record<string, string>;
 }
@@ -105,6 +110,7 @@ export interface LanguageDubSpec {
   embed_sub?: SubtitleSource | null;
   sync_tts_sub: boolean;
   sync_embed_sub: boolean;
+  replace_audio_index?: number | null;
 }
 
 export interface CandidateSubtitle {
@@ -120,6 +126,7 @@ export interface ItemConfig {
   dub_languages: string[];
   original_language: string;
   original_audio_index: number;
+  source_audio_index?: number | null;
   tts_speed: number;
   workers: number;
   use_gpu: boolean;
@@ -153,6 +160,16 @@ export interface JobMetrics {
   completed_dubs: number;
 }
 
+export interface AvailableLanguageInfo {
+  language: string;
+  has_embedded: boolean;
+  has_external: boolean;
+  has_uploaded?: boolean;
+  has_existing_audio: boolean;
+  existing_audio_indices?: number[];
+  available: boolean;
+}
+
 export interface JobItem {
   id: string;
   source_path: string;
@@ -163,6 +180,7 @@ export interface JobItem {
   detail: string;
   error?: string;
   config: ItemConfig;
+  available_languages?: AvailableLanguageInfo[];
   video_info?: VideoInfo;
   metrics?: JobMetrics;
   created_at: string;

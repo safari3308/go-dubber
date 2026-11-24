@@ -101,6 +101,10 @@ func runWebServer(configPath string, portOverride int, devMode bool) {
 	ttsMon.Start(ctx)
 
 	qm := queue.NewManager(getCfg, hw, ws, broker, ttsMon)
+	browserBridge := tts.NewBrowserTTSBridge(func(req tts.BrowserTTSRequest) {
+		broker.Publish("browser_tts_request", req)
+	})
+	qm.SetBrowserTTS(browserBridge)
 
 	webFS, err := web.DistFS()
 	if err != nil {

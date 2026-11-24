@@ -100,6 +100,13 @@ func ExtractAudioAnchorContext(ctx context.Context, videoPath, outputPath string
 	return nil
 }
 
+// RemuxOptions controls per-job audio track selection and replacement during remuxing.
+type RemuxOptions struct {
+	ReplaceAudioIndex  *int // nil or <0 = add new track; >=0 = replace existing relative audio track #N
+	OriginalAudioIndex *int // nil = auto-select via cfg.OriginalLanguage; >=0 = explicit source audio track #N
+	NoBackgroundAudio  bool // true = TTS voice only (no original background audio mixed in)
+}
+
 func RemuxVideo(
 	cfg *config.Config,
 	videoPath string,
@@ -110,7 +117,7 @@ func RemuxVideo(
 	isExternalSub bool,
 	lang string,
 ) error {
-	return RemuxVideoContext(context.Background(), cfg, videoPath, wavPath, subPath, outTempPath, info, isExternalSub, lang)
+	return RemuxVideoWithOptions(context.Background(), cfg, videoPath, wavPath, subPath, outTempPath, info, isExternalSub, lang, RemuxOptions{})
 }
 
 func RemuxVideoContext(
@@ -123,6 +130,21 @@ func RemuxVideoContext(
 	info *VideoInfo,
 	isExternalSub bool,
 	lang string,
+) error {
+	return RemuxVideoWithOptions(ctx, cfg, videoPath, wavPath, subPath, outTempPath, info, isExternalSub, lang, RemuxOptions{})
+}
+
+func RemuxVideoWithOptions(
+	ctx context.Context,
+	cfg *config.Config,
+	videoPath string,
+	wavPath string,
+	subPath string,
+	outTempPath string,
+	info *VideoInfo,
+	isExternalSub bool,
+	lang string,
+	opts RemuxOptions,
 ) error {
 	normLang := strings.ToLower(strings.TrimSpace(lang))
 	trackLang := "vie"
@@ -148,6 +170,9 @@ func RemuxVideoContext(
 	}
 
 	targetAudioIndex := info.SelectOriginalAudioIndex(cfg.OriginalLanguage, cfg.OriginalAudioIndex)
+	if opts.OriginalAudioIndex != nil && *opts.OriginalAudioIndex >= 0 && *opts.OriginalAudioIndex < info.AudioTrackCount {
+		targetAudioIndex = *opts.OriginalAudioIndex
+	}
 
 	mixFilter := fmt.Sprintf("[0:a:%d]aresample=48000:async=1,asetpts=PTS-STARTPTS,aformat=channel_layouts=stereo,volume=1.0[bg];"+
 		"[1:a]aresample=48000:async=1,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,volume=%s[tts];"+
@@ -161,7 +186,7 @@ func RemuxVideoContext(
 	)
 
 	activeMixFilter := mixFilter
-	if info.AudioTrackCount == 0 {
+	if info.AudioTrackCount == 0 || opts.NoBackgroundAudio {
 		activeMixFilter = noBgAudioFilter
 	}
 
@@ -214,6 +239,18 @@ func RemuxVideoContext(
 		strings.Contains(strings.ToLower(videoPath), "demo") ||
 		info.AudioTrackCount == 0
 
+	shouldSkipAudioStream := func(relAudioIdx int, st FFprobeStream) bool {
+		if opts.ReplaceAudioIndex != nil {
+			if *opts.ReplaceAudioIndex >= 0 {
+				return relAudioIdx == *opts.ReplaceAudioIndex
+			}
+			// Explicitly adding a new track (ReplaceAudioIndex < 0): keep all existing audio tracks
+			return false
+		}
+		// Default legacy behavior: replace prior AI track for same language if any
+		return isAITrackForLanguage(st.Tags.Title, st.Tags.Language, lang)
+	}
+
 	keptAudioCount := 0
 	newAudioIndex := 0
 
@@ -222,12 +259,14 @@ func RemuxVideoContext(
 		newAudioIndex = 0
 
 		if len(streams) > 0 {
+			relIdx := 0
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrackForLanguage(st.Tags.Title, st.Tags.Language, lang) {
+					if !shouldSkipAudioStream(relIdx, st) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}
+					relIdx++
 				}
 			}
 		} else if info.AudioTrackCount > 0 {
@@ -236,12 +275,14 @@ func RemuxVideoContext(
 		}
 	} else {
 		if len(streams) > 0 {
+			relIdx := 0
 			for _, st := range streams {
 				if st.CodecType == "audio" {
-					if !isAITrackForLanguage(st.Tags.Title, st.Tags.Language, lang) {
+					if !shouldSkipAudioStream(relIdx, st) {
 						ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
 						keptAudioCount++
 					}
+					relIdx++
 				}
 			}
 		} else if info.AudioTrackCount > 0 {
@@ -359,7 +400,7 @@ func ExtractEmbeddedSubtitle(videoPath, outSrtPath string, subIndex int) error {
 
 func ExtractEmbeddedSubtitleContext(ctx context.Context, videoPath, outSrtPath string, subIndex int) error {
 	mapArg := fmt.Sprintf("0:s:%d", subIndex)
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", videoPath, "-map", mapArg, outSrtPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", videoPath, "-vn", "-an", "-dn", "-map", mapArg, outSrtPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -367,6 +408,22 @@ func ExtractEmbeddedSubtitleContext(ctx context.Context, videoPath, outSrtPath s
 			return ctx.Err()
 		}
 		return fmt.Errorf("FFmpeg subtitle extraction error: %s", stderr.String())
+	}
+	return nil
+}
+
+// ExtractEmbeddedSubtitleCopyContext extracts an embedded subtitle track with stream copy (-c:s copy)
+// to preserve original formatting (e.g. ASS/SSA styles & descriptions) without transcoding.
+func ExtractEmbeddedSubtitleCopyContext(ctx context.Context, videoPath, outPath string, subIndex int) error {
+	mapArg := fmt.Sprintf("0:s:%d", subIndex)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", videoPath, "-vn", "-an", "-dn", "-map", mapArg, "-c:s", "copy", outPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("FFmpeg subtitle copy extraction error: %s", stderr.String())
 	}
 	return nil
 }

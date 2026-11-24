@@ -144,6 +144,25 @@ func SafeReplaceOnNAS(srcLocal, dstNAS string) error {
 		_ = os.Remove(nasBak)
 	}()
 
+	// Fast-path for local same-volume files: instant O(1) atomic swap with backup rollback.
+	if IsLocalPath(dstNAS) && IsLocalPath(srcLocal) {
+		hasBak := false
+		if FileExists(dstNAS) {
+			if err := os.Rename(dstNAS, nasBak); err == nil {
+				hasBak = true
+			}
+		}
+		if err := os.Rename(srcLocal, dstNAS); err == nil {
+			if hasBak {
+				_ = os.Remove(nasBak)
+			}
+			return nil
+		} else if hasBak {
+			// Cross-device rename failed; restore original and fall back to chunked copy.
+			_ = os.Rename(nasBak, dstNAS)
+		}
+	}
+
 	// 2. LAYER 1: Chunked copy from Local SSD to temp .upload_ file on NAS
 	in, err := os.Open(srcLocal)
 	if err != nil {

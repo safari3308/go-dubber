@@ -44,6 +44,37 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path, languages }),
     }),
+  extractSubtitleJSON: (path: string, subIndex: number, format: 'original' | 'srt' = 'original') =>
+    request<{ filename: string; format: string; content: string }>('/api/fs/extract-subtitle', {
+      method: 'POST',
+      body: JSON.stringify({ path, sub_index: subIndex, format, as_json: true }),
+    }),
+  uploadQueueSubtitle: async (
+    jobId: string,
+    file: File,
+    language: 'en' | 'vi',
+    role: 'both' | 'tts' | 'embed' = 'both'
+  ): Promise<JobItem> => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('language', language);
+    form.append('role', role);
+    const res = await fetch(`/api/queue/items/${encodeURIComponent(jobId)}/subtitles`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.error) msg = body.error;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+    return res.json() as Promise<JobItem>;
+  },
 
   getQueue: () => request<QueueSnapshot>('/api/queue'),
   addQueueItems: (paths: string[], config?: Partial<ItemConfig>) =>

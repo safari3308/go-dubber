@@ -7,6 +7,7 @@ import { ItemConfigModal } from './components/ItemConfigModal';
 import { QueueList } from './components/QueueList';
 import { RecoveryBanner } from './components/RecoveryBanner';
 import { SettingsModal } from './components/SettingsModal';
+import { useBrowserKokoro } from './hooks/useBrowserKokoro';
 import type {
   GlobalConfig,
   HardwareProfile,
@@ -38,6 +39,7 @@ export default function App() {
   const [editingJob, setEditingJob] = useState<JobItem | null>(null);
   const [quickPath, setQuickPath] = useState('');
   const [addingQuickPath, setAddingQuickPath] = useState(false);
+  const browserKokoro = useBrowserKokoro();
 
   const pushToast = useCallback(
     (level: ToastNotification['level'], title: string, message: string) => {
@@ -143,8 +145,17 @@ export default function App() {
       }
     });
 
+    es.addEventListener('browser_tts_request', (e) => {
+      try {
+        const req = JSON.parse((e as MessageEvent).data);
+        browserKokoro.handleTTSRequest(req);
+      } catch {
+        // ignore
+      }
+    });
+
     return () => es.close();
-  }, [pushToast, refreshQueue, refreshRecovery]);
+  }, [pushToast, refreshQueue, refreshRecovery, browserKokoro.handleTTSRequest]);
 
   const handleCheckTTS = async () => {
     setCheckingTTS(true);
@@ -233,6 +244,32 @@ export default function App() {
     pushToast('success', 'Job Updated', 'Per-item dubbing & dual-subtitle config saved.');
   };
 
+  const handleToggleLanguage = async (job: JobItem, lang: 'en' | 'vi', checked: boolean) => {
+    const langs = new Set(job.config.dub_languages || []);
+    if (checked) langs.add(lang);
+    else langs.delete(lang);
+    try {
+      await api.updateQueueItem(job.id, { ...job.config, dub_languages: Array.from(langs) });
+      await refreshQueue();
+    } catch (err) {
+      pushToast('error', 'Update Failed', err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
+
+  const handleUploadSubtitle = async (
+    jobId: string,
+    file: File,
+    lang: 'en' | 'vi',
+    role: 'both' | 'tts' | 'embed'
+  ) => {
+    try {
+      await api.uploadQueueSubtitle(jobId, file, lang, role);
+      await refreshQueue();
+    } catch (err) {
+      pushToast('error', 'Upload Failed', err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
+
   const handleResumeRecovery = async (jobId: string) => {
     try {
       await api.resumeRecovery(jobId);
@@ -267,10 +304,15 @@ export default function App() {
         runnerStatus={queue.status}
         reuseAudioChunks={queue.reuse_audio_chunks}
         ttsStatus={ttsStatus}
+        browserKokoroState={browserKokoro.state}
+        browserKokoroProgress={browserKokoro.progress}
+        browserKokoroDevice={browserKokoro.device}
+        browserKokoroError={browserKokoro.error}
         hardware={hardware}
         checkingTTS={checkingTTS}
         hasPendingJobs={hasPendingJobs}
         onToggleReuseChunks={(v) => void handleToggleReuseChunks(v)}
+        onToggleBrowserKokoro={browserKokoro.toggle}
         onStart={() => void handleStart()}
         onPause={() => void handlePause()}
         onStop={() => void handleStop()}
@@ -325,6 +367,8 @@ export default function App() {
               onEdit={setEditingJob}
               onRemove={(id) => void handleRemoveItem(id)}
               onMove={(idx, dir) => void handleMoveItem(idx, dir)}
+              onToggleLanguage={handleToggleLanguage}
+              onUploadSubtitle={handleUploadSubtitle}
             />
           </section>
 

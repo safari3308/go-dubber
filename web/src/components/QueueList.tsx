@@ -1,3 +1,4 @@
+import { useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -7,12 +8,13 @@ import {
   Loader2,
   PauseCircle,
   Sliders,
-  Subtitles,
   Trash2,
+  Upload,
+  X,
   XCircle,
 } from 'lucide-react';
 import { formatBytes, formatDuration } from '../api/client';
-import type { JobItem, JobStatus } from '../types/api';
+import type { AvailableLanguageInfo, JobItem, JobStatus } from '../types/api';
 
 interface QueueListProps {
   items: JobItem[];
@@ -20,7 +22,19 @@ interface QueueListProps {
   onEdit: (job: JobItem) => void;
   onRemove: (id: string) => void;
   onMove: (index: number, dir: -1 | 1) => void;
+  onToggleLanguage: (job: JobItem, lang: 'en' | 'vi', checked: boolean) => Promise<void>;
+  onUploadSubtitle: (
+    jobId: string,
+    file: File,
+    lang: 'en' | 'vi',
+    role: 'both' | 'tts' | 'embed'
+  ) => Promise<void>;
 }
+
+const SUPPORTED_LANGS: { code: 'en' | 'vi'; label: string }[] = [
+  { code: 'en', label: 'English' },
+  { code: 'vi', label: 'Vietnamese' },
+];
 
 const statusStyles: Record<JobStatus, { label: string; cls: string }> = {
   pending: { label: 'Queued', cls: 'bg-slate-800 text-slate-300 ring-slate-700' },
@@ -35,20 +49,81 @@ const statusStyles: Record<JobStatus, { label: string; cls: string }> = {
   cancelled: { label: 'Cancelled', cls: 'bg-slate-800 text-slate-400 ring-slate-700' },
 };
 
-export function QueueList({ items, activeJobId, onEdit, onRemove, onMove }: QueueListProps) {
+function guessLangFromFilename(name: string): 'en' | 'vi' {
+  const lower = name.toLowerCase();
+  if (
+    lower.includes('.en.') ||
+    lower.includes('_en') ||
+    lower.includes('-en') ||
+    lower.includes('eng') ||
+    lower.includes('english')
+  ) {
+    return 'en';
+  }
+  return 'vi';
+}
+
+interface PendingUpload {
+  jobId: string;
+  file: File | null;
+  lang: 'en' | 'vi';
+  role: 'both' | 'tts' | 'embed';
+}
+
+export function QueueList({
+  items,
+  activeJobId,
+  onEdit,
+  onRemove,
+  onMove,
+  onToggleLanguage,
+  onUploadSubtitle,
+}: QueueListProps) {
+  const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
+  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-16 text-center">
         <FileVideo className="h-10 w-10 text-slate-600" />
         <h3 className="mt-3 text-sm font-semibold text-slate-200">Queue is empty</h3>
         <p className="mt-1 max-w-sm text-xs text-slate-400">
-          Click <span className="font-medium text-indigo-400">Add Files / Folder</span> to enqueue
-          videos. You can configure dual subtitles (TTS + ASS) per video and add or remove items
-          even while processing.
+          Click <span className="font-medium text-indigo-400">Add Files / Folder</span> or paste a
+          macOS pathname above. You can tick EN/VI languages and drag-and-drop external subtitles
+          directly onto any item.
         </p>
       </div>
     );
   }
+
+  const openUploadTray = (job: JobItem, droppedFile?: File) => {
+    const guessedLang = droppedFile ? guessLangFromFilename(droppedFile.name) : 'vi';
+    const isAss = droppedFile ? /\.(ass|ssa)$/i.test(droppedFile.name) : false;
+    setPendingUpload({
+      jobId: job.id,
+      file: droppedFile || null,
+      lang: guessedLang,
+      role: isAss ? 'both' : 'both',
+    });
+  };
+
+  const handleConfirmUpload = async () => {
+    if (!pendingUpload || !pendingUpload.file) return;
+    setUploading(true);
+    try {
+      await onUploadSubtitle(
+        pendingUpload.jobId,
+        pendingUpload.file,
+        pendingUpload.lang,
+        pendingUpload.role
+      );
+      setPendingUpload(null);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -61,12 +136,41 @@ export function QueueList({ items, activeJobId, onEdit, onRemove, onMove }: Queu
           job.status === 'synthesizing' ||
           job.status === 'remuxing' ||
           job.status === 'uploading';
+        const isDragTarget = dragOverJobId === job.id;
+        const showUploadTray = pendingUpload?.jobId === job.id;
+
+        const availMap = new Map<string, AvailableLanguageInfo>();
+        for (const al of job.available_languages || []) {
+          availMap.set(al.language, al);
+        }
 
         return (
           <div
             key={job.id}
+            onDragOver={(e) => {
+              if (isActive && isRunningStage) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+              if (dragOverJobId !== job.id) setDragOverJobId(job.id);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                setDragOverJobId((curr) => (curr === job.id ? null : curr));
+              }
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOverJobId(null);
+              if (isActive && isRunningStage) return;
+              const dropped = e.dataTransfer.files?.[0];
+              if (dropped) {
+                openUploadTray(job, dropped);
+              }
+            }}
             className={`rounded-xl border p-4 transition ${
-              isActive
+              isDragTarget
+                ? 'border-indigo-400 bg-indigo-500/10 ring-2 ring-indigo-500/40'
+                : isActive
                 ? 'border-indigo-500/50 bg-slate-900 shadow-lg shadow-indigo-500/5'
                 : 'border-slate-800/90 bg-slate-900/60 hover:border-slate-700'
             }`}
@@ -90,39 +194,106 @@ export function QueueList({ items, activeJobId, onEdit, onRemove, onMove }: Queu
 
                 <p className="mt-1 truncate text-xs text-slate-500">{job.source_path}</p>
 
-                {/* Config & Dual-Sub Pills */}
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-                  {job.config.dub_languages.map((lang) => {
-                    const spec = job.config.language_specs?.find((s) => s.language === lang);
-                    const hasSeparateASS =
-                      spec?.embed_sub &&
-                      spec.embed_sub.type === 'external' &&
+                {/* TTS Language Checkboxes (EN / VI) + Metadata */}
+                <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
+                  {SUPPORTED_LANGS.map(({ code, label }) => {
+                    const info = availMap.get(code);
+                    const checked = (job.config.dub_languages || []).includes(code);
+                    const available = info ? info.available : true;
+                    const spec = job.config.language_specs?.find((s) => s.language === code);
+                    const hasASS =
+                      spec?.embed_sub?.type === 'external' &&
                       (spec.embed_sub.format === 'ass' || spec.embed_sub.format === 'ssa');
+
+                    const sourceTags: string[] = [];
+                    if (info?.has_embedded) sourceTags.push('Emb');
+                    if (info?.has_external) sourceTags.push('Ext');
+                    if (info?.has_uploaded) sourceTags.push('Up');
+
+                    const hasExistingAudio = Boolean(info?.has_existing_audio);
+                    const replaceIdx =
+                      spec?.replace_audio_index !== undefined &&
+                      spec?.replace_audio_index !== null &&
+                      spec.replace_audio_index >= 0
+                        ? spec.replace_audio_index
+                        : null;
+
                     return (
-                      <span
-                        key={lang}
-                        className="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-0.5 text-slate-300 ring-1 ring-slate-700"
+                      <label
+                        key={code}
+                        title={
+                          hasExistingAudio
+                            ? `${label} audio already exists — unchecked by default. Tick to add a new track or replace an existing track in Config.`
+                            : available
+                            ? `${label} subtitles found (${sourceTags.join(', ') || 'configured'})`
+                            : `No ${label} subtitle found yet — upload or drop one to enable`
+                        }
+                        className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                          checked
+                            ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
+                            : available
+                            ? 'border-slate-700 bg-slate-800/80 text-slate-300 hover:border-slate-600'
+                            : 'border-slate-800 bg-slate-950/50 text-slate-500'
+                        } ${isActive && isRunningStage ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
                       >
-                        <Subtitles className="h-3 w-3 text-indigo-400" />
-                        <span className="font-semibold uppercase">{lang}</span>
-                        {hasSeparateASS && (
+                        <input
+                          type="checkbox"
+                          disabled={isActive && isRunningStage}
+                          checked={checked}
+                          onChange={(e) => void onToggleLanguage(job, code, e.target.checked)}
+                          className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500"
+                        />
+                        <span className="font-semibold uppercase">{code}</span>
+                        {sourceTags.length > 0 ? (
+                          <span className="text-[10px] text-slate-400">
+                            ({sourceTags.join('+')})
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-600">(no sub)</span>
+                        )}
+                        {hasExistingAudio && !checked && (
+                          <span className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-300">
+                            has audio
+                          </span>
+                        )}
+                        {checked && replaceIdx !== null && (
+                          <span className="rounded bg-fuchsia-500/20 px-1 text-[10px] text-fuchsia-300">
+                            replace #{replaceIdx}
+                          </span>
+                        )}
+                        {hasASS && (
                           <span className="rounded bg-sky-500/20 px-1 text-[10px] text-sky-300">
                             +ASS
                           </span>
                         )}
-                      </span>
+                      </label>
                     );
                   })}
-                  <span className="rounded-md bg-slate-800/70 px-2 py-0.5 text-slate-400">
-                    {job.config.tts_speed.toFixed(2)}x
-                  </span>
-                  {job.config.skip_encode && (
-                    <span className="rounded-md bg-slate-800/70 px-2 py-0.5 text-slate-400">
-                      Copy Stream
+
+                  {job.video_info && job.video_info.audio_track_count === 0 && (
+                    <span className="rounded-md bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-300 ring-1 ring-emerald-500/30">
+                      No audio (TTS-only recording)
                     </span>
                   )}
+                  {job.video_info && job.video_info.audio_track_count > 0 && (
+                    <span
+                      title={(job.video_info.audio_streams || [])
+                        .map(
+                          (a) =>
+                            `#${a.audio_index} ${a.language} (${a.codec_name}${a.channels ? `, ${a.channels}ch` : ''})${a.title ? ` — ${a.title}` : ''}`
+                        )
+                        .join('\n')}
+                      className="rounded-md bg-slate-800/70 px-2 py-1 text-[11px] text-slate-400"
+                    >
+                      {job.video_info.audio_track_count} audio{' '}
+                      {job.video_info.audio_track_count === 1 ? 'track' : 'tracks'}
+                    </span>
+                  )}
+                  <span className="rounded-md bg-slate-800/70 px-2 py-1 text-[11px] text-slate-400">
+                    {job.config.tts_speed.toFixed(2)}x
+                  </span>
                   {job.video_info && (
-                    <span className="rounded-md bg-slate-800/70 px-2 py-0.5 text-slate-400">
+                    <span className="rounded-md bg-slate-800/70 px-2 py-1 text-[11px] text-slate-400">
                       {job.video_info.video_codec.toUpperCase()} • {job.video_info.width}w •{' '}
                       {formatDuration(job.video_info.duration)}
                     </span>
@@ -153,8 +324,18 @@ export function QueueList({ items, activeJobId, onEdit, onRemove, onMove }: Queu
                 <button
                   type="button"
                   disabled={isActive && isRunningStage}
+                  onClick={() => openUploadTray(job)}
+                  title="Upload or drop external subtitle (.srt / .ass)"
+                  className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-200 ring-1 ring-slate-700 hover:bg-slate-700 disabled:opacity-40"
+                >
+                  <Upload className="h-3.5 w-3.5 text-emerald-400" />
+                  Sub
+                </button>
+                <button
+                  type="button"
+                  disabled={isActive && isRunningStage}
                   onClick={() => onEdit(job)}
-                  title="Configure dubbing & dual subtitles"
+                  title="Configure dubbing, dual subtitles & extract embedded subs"
                   className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-200 ring-1 ring-slate-700 hover:bg-slate-700 disabled:opacity-40"
                 >
                   <Sliders className="h-3.5 w-3.5 text-indigo-400" />
@@ -170,6 +351,97 @@ export function QueueList({ items, activeJobId, onEdit, onRemove, onMove }: Queu
                 </button>
               </div>
             </div>
+
+            {/* Drag hint banner */}
+            {isDragTarget && (
+              <div className="mt-3 rounded-lg border border-dashed border-indigo-400/70 bg-indigo-500/15 py-2 text-center text-xs font-medium text-indigo-200">
+                Drop subtitle file (.srt, .ass, .ssa, .vtt) here to attach to {job.file_name}
+              </div>
+            )}
+
+            {/* Inline Upload Subtitle Tray */}
+            {showUploadTray && pendingUpload && (
+              <div className="mt-3 rounded-xl border border-emerald-500/30 bg-slate-950/80 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-emerald-300">
+                    Attach External Subtitle
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingUpload(null)}
+                    className="rounded p-0.5 text-slate-400 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".srt,.ass,.ssa,.vtt,.sub,.sbv,.smi,.sami,.ttml,.dfxp,.lrc"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      if (f) {
+                        setPendingUpload((prev) =>
+                          prev ? { ...prev, file: f, lang: guessLangFromFilename(f.name) } : prev
+                        );
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex max-w-xs items-center gap-1.5 truncate rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-200 hover:border-slate-500"
+                  >
+                    <Upload className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                    <span className="truncate">
+                      {pendingUpload.file ? pendingUpload.file.name : 'Choose subtitle file...'}
+                    </span>
+                  </button>
+
+                  <select
+                    value={pendingUpload.lang}
+                    onChange={(e) =>
+                      setPendingUpload((prev) =>
+                        prev ? { ...prev, lang: e.target.value as 'en' | 'vi' } : prev
+                      )
+                    }
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="vi">Vietnamese (VI)</option>
+                    <option value="en">English (EN)</option>
+                  </select>
+
+                  <select
+                    value={pendingUpload.role}
+                    onChange={(e) =>
+                      setPendingUpload((prev) =>
+                        prev
+                          ? { ...prev, role: e.target.value as 'both' | 'tts' | 'embed' }
+                          : prev
+                      )
+                    }
+                    className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="both">Use for TTS + Embed</option>
+                    <option value="tts">Use for TTS Only</option>
+                    <option value="embed">Embed in Video Only (ASS/SRT)</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    disabled={!pendingUpload.file || uploading}
+                    onClick={() => void handleConfirmUpload()}
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
+                  >
+                    {uploading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Attach
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Progress Bar & Detail */}
             {(isRunningStage || job.progress > 0 || job.detail) && (

@@ -21,6 +21,7 @@ type StreamInfo struct {
 	CodecType   string            `json:"codec_type"`
 	CodecName   string            `json:"codec_name"` // Codec identifier (hevc, h264...)
 	Width       int               `json:"width"`
+	Channels    int               `json:"channels"`
 	BitRate     string            `json:"bit_rate"`
 	Duration    string            `json:"duration"`
 	Tags        map[string]string `json:"tags"`
@@ -56,6 +57,11 @@ func IsBitmapSubtitleCodec(codecName string) bool {
 // AudioStreamDetails stores audio track information.
 type AudioStreamDetails struct {
 	AudioIndex int               `json:"audio_index"` // Relative index between audio tracks (0, 1, 2...)
+	StreamIdx  int               `json:"stream_idx"`  // Absolute stream index in container
+	CodecName  string            `json:"codec_name"`
+	Channels   int               `json:"channels"`
+	Language   string            `json:"language"`
+	Title      string            `json:"title"`
 	IsKokoro   bool              `json:"is_kokoro"`
 	Tags       map[string]string `json:"tags"`
 }
@@ -270,6 +276,7 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 	info := &VideoInfo{
 		HasKokoroTrack:       false,
 		OriginalAudioIndices: []int{},
+		AudioStreams:         []AudioStreamDetails{},
 		OriginalSubIndices:   []int{},
 		EmbeddedSubStreams:   []EmbeddedSubInfo{},
 	}
@@ -319,8 +326,20 @@ func InspectVideo(videoPath string) (*VideoInfo, error) {
 			if matchLanguage(s.Tags, "en") {
 				info.HasEnglishAudio = true
 			}
+			audioTitle := ""
+			for k, v := range s.Tags {
+				if strings.EqualFold(k, "title") {
+					audioTitle = v
+					break
+				}
+			}
 			info.AudioStreams = append(info.AudioStreams, AudioStreamDetails{
 				AudioIndex: audioStreamCounter,
+				StreamIdx:  s.Index,
+				CodecName:  s.CodecName,
+				Channels:   s.Channels,
+				Language:   normalizeLanguage(s.Tags),
+				Title:      audioTitle,
 				IsKokoro:   isKokoro,
 				Tags:       s.Tags,
 			})

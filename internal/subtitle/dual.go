@@ -35,11 +35,12 @@ func (s SubtitleSource) IsASS() bool {
 
 // LanguageDubSpec defines the dual-subtitle configuration for a single dubbing language.
 type LanguageDubSpec struct {
-	Language     string          `json:"language"`
-	TTSSub       SubtitleSource  `json:"tts_sub"`                 // Subtitle used for TTS voiceover generation
-	EmbedSub     *SubtitleSource `json:"embed_sub,omitempty"`     // Optional separate subtitle muxed into output video (e.g. .ass with descriptions)
-	SyncTTSSub   bool            `json:"sync_tts_sub"`            // Run subsync on TTSSub when external
-	SyncEmbedSub bool            `json:"sync_embed_sub"`          // Run subsync on EmbedSub when external
+	Language          string          `json:"language"`
+	TTSSub            SubtitleSource  `json:"tts_sub"`                       // Subtitle used for TTS voiceover generation
+	EmbedSub          *SubtitleSource `json:"embed_sub,omitempty"`           // Optional separate subtitle muxed into output video (e.g. .ass with descriptions)
+	SyncTTSSub        bool            `json:"sync_tts_sub"`                  // Run subsync on TTSSub when external
+	SyncEmbedSub      bool            `json:"sync_embed_sub"`                // Run subsync on EmbedSub when external
+	ReplaceAudioIndex *int            `json:"replace_audio_index,omitempty"` // nil or <0 = add new track; >=0 = replace relative audio track #N
 }
 
 // CandidateSubtitle represents a discovered external subtitle file for a video.

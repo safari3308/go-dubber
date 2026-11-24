@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,7 +91,29 @@ func TestServer_APIAndSPA(t *testing.T) {
 		t.Errorf("unexpected queue snapshot: %+v", snap)
 	}
 
-	// 5. GET /api/recovery
+	// 5. POST /api/queue/items/{id}/subtitles (upload external subtitle)
+	var mpBuf bytes.Buffer
+	mw := multipart.NewWriter(&mpBuf)
+	_ = mw.WriteField("language", "vi")
+	_ = mw.WriteField("role", "both")
+	fw, _ := mw.CreateFormFile("file", "Movie.vi.ass")
+	_, _ = fw.Write([]byte("[Script Info]\nTitle: Uploaded ASS\n"))
+	_ = mw.Close()
+
+	uploadReq := httptest.NewRequest(http.MethodPost, "/api/queue/items/"+snap.Items[0].ID+"/subtitles", &mpBuf)
+	uploadReq.Header.Set("Content-Type", mw.FormDataContentType())
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, uploadReq)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/queue/items/{id}/subtitles returned %d: %s", rec.Code, rec.Body.String())
+	}
+	var updatedJob queue.JobItem
+	_ = json.Unmarshal(rec.Body.Bytes(), &updatedJob)
+	if len(updatedJob.Config.DubLanguages) != 1 || updatedJob.Config.DubLanguages[0] != "vi" {
+		t.Errorf("expected vi to be enabled after upload, got %v", updatedJob.Config.DubLanguages)
+	}
+
+	// 6. GET /api/recovery
 	req = httptest.NewRequest(http.MethodGet, "/api/recovery", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

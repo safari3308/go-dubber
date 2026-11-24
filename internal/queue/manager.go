@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,12 +38,13 @@ type Manager struct {
 	stopRequested    bool
 	reuseAudioChunks bool
 
-	getCfg   func() *config.Config
-	hw       *hardware.HardwareProfile
-	ws       *workspace.Manager
-	broker   *sse.Broker
-	ttsMon   *tts.HealthMonitor
-	executor ExecutorFunc
+	getCfg     func() *config.Config
+	hw         *hardware.HardwareProfile
+	ws         *workspace.Manager
+	broker     *sse.Broker
+	ttsMon     *tts.HealthMonitor
+	browserTTS *tts.BrowserTTSBridge
+	executor   ExecutorFunc
 }
 
 // NewManager creates a Queue Manager and loads any persisted queue.json from workdir.
@@ -75,11 +77,19 @@ func (m *Manager) SetExecutor(fn ExecutorFunc) {
 	m.executor = fn
 }
 
+// SetBrowserTTS attaches an optional in-browser KokoroJS fallback bridge for English TTS.
+func (m *Manager) SetBrowserTTS(b *tts.BrowserTTSBridge) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.browserTTS = b
+}
+
 func (m *Manager) GetConfig() *config.Config            { return m.getCfg() }
 func (m *Manager) Hardware() *hardware.HardwareProfile  { return m.hw }
 func (m *Manager) Workspace() *workspace.Manager        { return m.ws }
 func (m *Manager) Broker() *sse.Broker                  { return m.broker }
 func (m *Manager) TTSMonitor() *tts.HealthMonitor       { return m.ttsMon }
+func (m *Manager) BrowserTTS() *tts.BrowserTTSBridge    { return m.browserTTS }
 
 // Snapshot returns a thread-safe copy of the current queue state.
 func (m *Manager) Snapshot() Snapshot {
@@ -163,31 +173,56 @@ func (m *Manager) AddPaths(paths []string, overrideCfg *ItemConfig) ([]JobItem, 
 			vInfo = info
 		}
 
+		var embedded []subtitle.EmbeddedSubInfo
+		if vInfo != nil {
+			embedded = vInfo.EmbeddedSubStreams
+		}
+		effectiveCfg := *globalCfg
+		effectiveCfg.SkipSubSync = itemCfg.SkipSubSync
+		effectiveCfg.DropSongSubtitles = itemCfg.DropSongSubtitles
+
+		availLangs := detectAvailableLanguages(vp, vInfo, embedded, &effectiveCfg, nil)
+
 		if len(itemCfg.LanguageSpecs) == 0 {
-			var embedded []subtitle.EmbeddedSubInfo
-			if vInfo != nil {
-				embedded = vInfo.EmbeddedSubStreams
-			}
-			effectiveCfg := *globalCfg
-			effectiveCfg.SkipSubSync = itemCfg.SkipSubSync
-			effectiveCfg.DropSongSubtitles = itemCfg.DropSongSubtitles
-			for _, lang := range itemCfg.DubLanguages {
+			for _, lang := range SupportedTTSLanguages {
 				if spec := subtitle.ResolveDualSubtitle(vp, embedded, &effectiveCfg, lang); spec != nil {
 					itemCfg.LanguageSpecs = append(itemCfg.LanguageSpecs, *spec)
 				}
 			}
 		}
 
+		// Filter default DubLanguages to supported TTS languages that are available.
+		// If an audio track for that language already exists, leave it UNCHECKED by default
+		// (unless ForceReprocess is enabled). Checking it later means adding a new track or replacing the existing track.
+		checkedLangs := []string{}
+		for _, dl := range itemCfg.DubLanguages {
+			norm := strings.ToLower(strings.TrimSpace(dl))
+			if !isSupportedTTSLang(norm) {
+				continue
+			}
+			for _, al := range availLangs {
+				if al.Language == norm && al.Available {
+					if al.HasExistingAudio && !itemCfg.ForceReprocess {
+						break
+					}
+					checkedLangs = append(checkedLangs, norm)
+					break
+				}
+			}
+		}
+		itemCfg.DubLanguages = checkedLangs
+
 		item := &JobItem{
-			ID:         newJobID(),
-			SourcePath: vp,
-			FileName:   filepath.Base(vp),
-			Status:     JobPending,
-			Stage:      "pending",
-			Config:     itemCfg,
-			VideoInfo:  vInfo,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			ID:                 newJobID(),
+			SourcePath:         vp,
+			FileName:           filepath.Base(vp),
+			Status:             JobPending,
+			Stage:              "pending",
+			Config:             itemCfg,
+			AvailableLanguages: availLangs,
+			VideoInfo:          vInfo,
+			CreatedAt:          now,
+			UpdatedAt:          now,
 		}
 
 		m.mu.Lock()
@@ -269,6 +304,9 @@ func (m *Manager) ResumeRecoverable(jobID string) (*JobItem, error) {
 
 // UpdateItemConfig modifies the dubbing configuration (including dual-subtitles) of a non-running item.
 func (m *Manager) UpdateItemConfig(id string, cfg ItemConfig) (*JobItem, error) {
+	if cfg.DubLanguages == nil {
+		cfg.DubLanguages = []string{}
+	}
 	// Sanitize any user-pasted external subtitle paths (e.g. macOS quoted pathnames)
 	for i := range cfg.LanguageSpecs {
 		if cfg.LanguageSpecs[i].TTSSub.Type == "external" && cfg.LanguageSpecs[i].TTSSub.Path != "" {
@@ -300,6 +338,154 @@ func (m *Manager) UpdateItemConfig(id string, cfg ItemConfig) (*JobItem, error) 
 		}
 	}
 	return nil, fmt.Errorf("job %s not found", id)
+}
+
+// AttachUploadedSubtitle attaches an uploaded external subtitle file to a queue item for lang ("en" or "vi").
+// role can be "both" (default), "tts", or "embed".
+func (m *Manager) AttachUploadedSubtitle(id, lang, role, filePath string) (*JobItem, error) {
+	lang = strings.ToLower(strings.TrimSpace(lang))
+	if !isSupportedTTSLang(lang) {
+		return nil, fmt.Errorf("unsupported TTS language %q (supported: en, vi)", lang)
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		role = "both"
+	}
+
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
+	if ext == "" {
+		ext = "srt"
+	}
+	src := subtitle.SubtitleSource{
+		Type:        "external",
+		Path:        filePath,
+		Format:      ext,
+		Description: fmt.Sprintf("Uploaded %s: %s", strings.ToUpper(ext), filepath.Base(filePath)),
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, it := range m.items {
+		if it.ID != id {
+			continue
+		}
+		if m.activeJobID == id && m.status == RunnerRunning {
+			return nil, fmt.Errorf("cannot attach subtitle to currently running job")
+		}
+
+		specIdx := -1
+		for i := range it.Config.LanguageSpecs {
+			if it.Config.LanguageSpecs[i].Language == lang {
+				specIdx = i
+				break
+			}
+		}
+
+		if specIdx == -1 {
+			newSpec := subtitle.LanguageDubSpec{
+				Language:   lang,
+				SyncTTSSub: !it.Config.SkipSubSync,
+			}
+			it.Config.LanguageSpecs = append(it.Config.LanguageSpecs, newSpec)
+			specIdx = len(it.Config.LanguageSpecs) - 1
+		}
+
+		spec := &it.Config.LanguageSpecs[specIdx]
+		switch role {
+		case "tts":
+			spec.TTSSub = src
+			spec.SyncTTSSub = !it.Config.SkipSubSync
+		case "embed":
+			cp := src
+			spec.EmbedSub = &cp
+			spec.SyncEmbedSub = !src.IsASS() && !it.Config.SkipSubSync
+		default: // "both"
+			spec.TTSSub = src
+			cp := src
+			spec.EmbedSub = &cp
+			spec.SyncTTSSub = !it.Config.SkipSubSync
+			spec.SyncEmbedSub = !src.IsASS() && !it.Config.SkipSubSync
+		}
+
+		// Automatically tick this language in DubLanguages so it's ready for TTS
+		hasLang := false
+		for _, l := range it.Config.DubLanguages {
+			if strings.ToLower(strings.TrimSpace(l)) == lang {
+				hasLang = true
+				break
+			}
+		}
+		if !hasLang {
+			it.Config.DubLanguages = append(it.Config.DubLanguages, lang)
+		}
+
+		// Refresh AvailableLanguages to reflect uploaded subtitle
+		var embedded []subtitle.EmbeddedSubInfo
+		if it.VideoInfo != nil {
+			embedded = it.VideoInfo.EmbeddedSubStreams
+		}
+		it.AvailableLanguages = detectAvailableLanguages(it.SourcePath, it.VideoInfo, embedded, m.getCfg(), it.Config.LanguageSpecs)
+		it.UpdatedAt = time.Now().UTC()
+		m.savePersistedQueueLocked()
+
+		cp := *it
+		go m.publishJobUpdated(cp)
+		return &cp, nil
+	}
+
+	return nil, fmt.Errorf("job %s not found", id)
+}
+
+func isSupportedTTSLang(lang string) bool {
+	for _, l := range SupportedTTSLanguages {
+		if l == lang {
+			return true
+		}
+	}
+	return false
+}
+
+func detectAvailableLanguages(videoPath string, videoInfo *media.VideoInfo, embedded []subtitle.EmbeddedSubInfo, cfg *config.Config, specs []subtitle.LanguageDubSpec) []AvailableLanguageInfo {
+	result := make([]AvailableLanguageInfo, 0, len(SupportedTTSLanguages))
+	for _, lang := range SupportedTTSLanguages {
+		info := AvailableLanguageInfo{Language: lang}
+
+		for _, sub := range embedded {
+			if !sub.IsBitmap && subtitle.IsSubMatchingLanguage(sub.Language, sub.Title, lang) {
+				info.HasEmbedded = true
+				break
+			}
+		}
+
+		if videoInfo != nil {
+			if videoInfo.HasAudioLanguage(lang) {
+				info.HasExistingAudio = true
+			}
+			for _, as := range videoInfo.AudioStreams {
+				if subtitle.IsSubMatchingLanguage(as.Language, as.Title, lang) {
+					info.HasExistingAudio = true
+					info.ExistingAudioIndices = append(info.ExistingAudioIndices, as.AudioIndex)
+				}
+			}
+		}
+
+		cands := subtitle.DiscoverExternalSubtitlesForLanguage(videoPath, lang, cfg)
+		if len(cands) > 0 {
+			info.HasExternal = true
+		}
+
+		for _, sp := range specs {
+			if sp.Language == lang && (sp.TTSSub.IsValid() || (sp.EmbedSub != nil && sp.EmbedSub.IsValid())) {
+				info.HasUploaded = true
+				break
+			}
+		}
+
+		info.Available = info.HasEmbedded || info.HasExternal || info.HasUploaded
+		result = append(result, info)
+	}
+	return result
 }
 
 // RemoveItem removes an item from the queue. If it is currently executing, cancels it cleanly.
@@ -589,6 +775,9 @@ func (m *Manager) loadPersistedQueue() {
 	}
 	// Any jobs that were mid-flight when the server died are marked paused so they can be resumed.
 	for _, it := range items {
+		if it.Config.DubLanguages == nil {
+			it.Config.DubLanguages = []string{}
+		}
 		switch it.Status {
 		case JobDownloading, JobSyncing, JobSynthesizing, JobRemuxing, JobUploading:
 			it.Status = JobPaused
