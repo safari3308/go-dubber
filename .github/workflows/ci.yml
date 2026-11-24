@@ -1,0 +1,77 @@
+name: CI & Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build Web + Test & Cross-Compile Go
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg (for media tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build React SPA
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run go vet & tests
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Cross-compile binaries (embedded Web UI)
+        run: |
+          mkdir -p dist
+          targets=(
+            "darwin/arm64"
+            "darwin/amd64"
+            "linux/amd64"
+            "linux/arm64"
+            "windows/amd64"
+          )
+          for target in "${targets[@]}"; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            ext=""
+            if [ "$GOOS" = "windows" ]; then
+              ext=".exe"
+            fi
+            out="dist/go-dubber-${GOOS}-${GOARCH}${ext}"
+            echo "Building ${out}..."
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/go-dubber
+          done
+          ls -lh dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-dubber-binaries
+          path: dist/
+          retention-days: 14

@@ -66,9 +66,11 @@ export function HeaderBar({
         {/* Brand + Status Pills */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-400 ring-1 ring-indigo-500/30">
-              <Play className="h-4 w-4 fill-current" />
-            </div>
+            <img
+              src="/logo.png"
+              alt="Go-Dubber Logo"
+              className="h-9 w-9 rounded-xl object-cover shadow-sm ring-1 ring-indigo-500/30"
+            />
             <div>
               <h1 className="text-base font-semibold tracking-tight text-white">Go-Dubber</h1>
               <p className="text-xs text-slate-400">AI Media Dubbing Studio</p>
