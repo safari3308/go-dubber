@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/safari3308/go-dubber/internal/config"
@@ -91,6 +92,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	}
 
 	// 2. Inspect source video metadata
+	logInfo(fmt.Sprintf("Inspecting %s...", job.FileName))
 	mgr.UpdateJobProgress(job.ID, JobDownloading, "inspecting", 2, "Inspecting video streams...")
 	videoInfo, err := media.InspectVideo(job.SourcePath)
 	if err != nil {
@@ -262,9 +264,19 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		state.Stage = "synthesizing"
 		_ = ws.SaveState(state)
 		ttsWavPath := filepath.Join(ws.JobDir(job.ID), fmt.Sprintf("tts_%s.wav", lang))
+		logInfo(fmt.Sprintf("[%s] Starting AI voice synthesis (reuse_chunks=%v)...", lang, reuseChunks))
 
+		var lastEmitMs atomic.Int64
 		reporter := progress.FuncReporter{
 			OnUpdate: func(stage string, pct float64, msg string) {
+				nowMs := time.Now().UnixMilli()
+				prevMs := lastEmitMs.Load()
+				if pct < 99 && nowMs-prevMs < 250 {
+					return
+				}
+				if !lastEmitMs.CompareAndSwap(prevMs, nowMs) && pct < 99 {
+					return
+				}
 				overall := basePct + langSpan*(0.10+0.65*(pct/100.0))
 				mgr.UpdateJobProgress(job.ID, JobSynthesizing, stage, overall, fmt.Sprintf("[%s] %s", lang, msg))
 			},
@@ -302,6 +314,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		// 4e. Remux audio + embed subtitle (preserving ASS codec in MKV!) + encode/copy video
 		state.Stage = "remuxing"
 		_ = ws.SaveState(state)
+		logInfo(fmt.Sprintf("[%s] Remuxing video & embedding subtitle...", lang))
 		mgr.UpdateJobProgress(job.ID, JobRemuxing, "remuxing", basePct+langSpan*0.80, fmt.Sprintf("[%s] Remuxing video & embedding subtitle...", lang))
 
 		outTempVideo := filepath.Join(ws.JobDir(job.ID), "out_"+filepath.Base(localVideoPath))
@@ -349,6 +362,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	// 5. Safe NAS replacement
 	state.Stage = "uploading"
 	_ = ws.SaveState(state)
+	logInfo(fmt.Sprintf("Finalizing & replacing %s...", job.FileName))
 	mgr.UpdateJobProgress(job.ID, JobUploading, "uploading", 92, "Uploading finalized video back to NAS...")
 	if err := textutil.SafeReplaceOnNAS(localVideoPath, job.SourcePath); err != nil {
 		return fmt.Errorf("failed to replace file on NAS: %w", err)

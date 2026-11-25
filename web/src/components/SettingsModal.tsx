@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Cpu, Loader2, Save, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Cpu, Database, Loader2, Save, X } from 'lucide-react';
 import type { GlobalConfig, HardwareProfile } from '../types/api';
 
 interface SettingsModalProps {
@@ -10,6 +10,11 @@ interface SettingsModalProps {
   onSave: (cfg: GlobalConfig) => Promise<void>;
 }
 
+const SUPPORTED_LANGS: { code: 'en' | 'vi'; label: string }[] = [
+  { code: 'en', label: 'English (EN)' },
+  { code: 'vi', label: 'Vietnamese (VI)' },
+];
+
 export function SettingsModal({
   open,
   config,
@@ -18,28 +23,32 @@ export function SettingsModal({
   onSave,
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<GlobalConfig | null>(null);
-  const [langsInput, setLangsInput] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     if (open && config) {
       setDraft(structuredClone(config));
-      setLangsInput((config.dub_languages || []).join(', '));
+      setShowAdvanced(false);
       setError('');
     }
   }, [open, config]);
 
   if (!open || !draft) return null;
 
+  const toggleDefaultLang = (code: 'en' | 'vi', checked: boolean) => {
+    const set = new Set(draft.dub_languages || []);
+    if (checked) set.add(code);
+    else set.delete(code);
+    setDraft({ ...draft, dub_languages: Array.from(set) });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
     try {
-      const langs = langsInput
-        .split(',')
-        .map((l) => l.trim().toLowerCase())
-        .filter(Boolean);
+      const langs = (draft.dub_languages || []).filter((l) => l === 'en' || l === 'vi');
       await onSave({ ...draft, dub_languages: langs.length ? langs : ['vi'] });
       onClose();
     } catch (err) {
@@ -52,8 +61,15 @@ export function SettingsModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
       <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-2xl">
+        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
-          <h3 className="text-base font-semibold text-white">Global Settings & Hardware</h3>
+          <div>
+            <h3 className="text-base font-semibold text-white">Settings</h3>
+            <p className="mt-0.5 inline-flex items-center gap-1.5 text-xs text-slate-400">
+              <Database className="h-3 w-3 text-indigo-400" />
+              Stored locally in SQLite (workdir/dubber.db) — no config.json required
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -70,91 +86,84 @@ export function SettingsModal({
             </div>
           )}
 
-          {/* Hardware Detection Card */}
-          {hardware && (
-            <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
-              <div className="flex items-center gap-2 text-xs font-semibold text-sky-300">
-                <Cpu className="h-4 w-4" />
-                Auto-Detected Machine Profile
+          {/* Basic Settings */}
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-300">TTS Backend URL</label>
+                <input
+                  type="text"
+                  value={draft.api_url}
+                  onChange={(e) => setDraft({ ...draft, api_url: e.target.value })}
+                  placeholder="http://localhost:8000"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Optional for English if using Browser EN (KokoroJS).
+                </p>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-300 sm:grid-cols-3">
-                <div>
-                  <span className="text-slate-500">OS / Arch:</span> {hardware.os}/{hardware.arch}
-                </div>
-                <div>
-                  <span className="text-slate-500">CPU Cores:</span> {hardware.cpu_cores}
-                </div>
-                <div>
-                  <span className="text-slate-500">Selected:</span> {hardware.selected_encoder}
-                </div>
-                <div className="col-span-2 sm:col-span-3">
-                  <span className="text-slate-500">Verified Encoders:</span>{' '}
-                  {hardware.available_encoders?.join(', ') || 'none'}
-                </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-300">
+                  TTS API Token <span className="text-slate-500">(optional)</span>
+                </label>
+                <input
+                  type="password"
+                  value={draft.api_token}
+                  onChange={(e) => setDraft({ ...draft, api_token: e.target.value })}
+                  placeholder="Bearer token"
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
               </div>
             </div>
-          )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
+            <div>
               <label className="block text-xs font-medium text-slate-300">
-                Default NAS / Media Root Directory
+                Default Media / NAS Folder
               </label>
               <input
                 type="text"
                 value={draft.nas_dir}
                 onChange={(e) => setDraft({ ...draft, nas_dir: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                placeholder="/Volumes/Media or /Users/.../Downloads"
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300">TTS Service URL</label>
-              <input
-                type="text"
-                value={draft.api_url}
-                onChange={(e) => setDraft({ ...draft, api_url: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-300">
+                  Default Dub Languages
+                </label>
+                <div className="mt-1.5 flex gap-2">
+                  {SUPPORTED_LANGS.map(({ code, label }) => {
+                    const checked = (draft.dub_languages || []).includes(code);
+                    return (
+                      <label
+                        key={code}
+                        className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                          checked
+                            ? 'border-indigo-500/60 bg-indigo-500/15 text-indigo-200'
+                            : 'border-slate-700 bg-slate-950 text-slate-400 hover:border-slate-600'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => toggleDefaultLang(code, e.target.checked)}
+                          className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                        />
+                        <span>{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
 
-            <div>
-              <label className="block text-xs font-medium text-slate-300">TTS API Token</label>
-              <input
-                type="password"
-                value={draft.api_token}
-                onChange={(e) => setDraft({ ...draft, api_token: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300">
-                Default Dub Languages
-              </label>
-              <input
-                type="text"
-                value={langsInput}
-                onChange={(e) => setLangsInput(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-300">
-                TTS Workers / Speed
-              </label>
-              <div className="mt-1 flex gap-2">
-                <input
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={draft.workers}
-                  onChange={(e) =>
-                    setDraft({ ...draft, workers: parseInt(e.target.value, 10) || 2 })
-                  }
-                  className="w-1/2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
-                />
+              <div>
+                <label className="block text-xs font-medium text-slate-300">
+                  Default TTS Speed ({draft.tts_speed.toFixed(2)}x)
+                </label>
                 <input
                   type="number"
                   step={0.05}
@@ -164,35 +173,143 @@ export function SettingsModal({
                   onChange={(e) =>
                     setDraft({ ...draft, tts_speed: parseFloat(e.target.value) || 1.1 })
                   }
-                  className="w-1/2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
             </div>
 
-            <div className="sm:col-span-2 grid grid-cols-2 gap-3">
-              {[
-                { key: 'auto_detect_hardware', label: 'Auto-Detect FFmpeg Hardware' },
-                { key: 'use_gpu', label: 'Prefer GPU Encoding' },
-                { key: 'skip_encode', label: 'Skip Video Re-encode by Default' },
-                { key: 'drop_song_subtitles', label: 'Drop Song/Karaoke Subtitles' },
-              ].map(({ key, label }) => (
-                <label
-                  key={key}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-xs text-slate-300"
-                >
-                  <input
-                    type="checkbox"
-                    checked={Boolean(draft[key as keyof GlobalConfig])}
-                    onChange={(e) => setDraft({ ...draft, [key]: e.target.checked })}
-                    className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
+            {/* Hardware Detection Card */}
+            {hardware && (
+              <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-sky-300">
+                    <Cpu className="h-4 w-4" />
+                    Auto-Detected Encoder: {hardware.encoder_label}
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    {hardware.os}/{hardware.arch} • {hardware.cpu_cores} cores
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.auto_detect_hardware)}
+                      onChange={(e) =>
+                        setDraft({ ...draft, auto_detect_hardware: e.target.checked })
+                      }
+                      className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                    />
+                    <span>Auto-tune FFmpeg for this machine</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.skip_encode)}
+                      onChange={(e) => setDraft({ ...draft, skip_encode: e.target.checked })}
+                      className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                    />
+                    <span>Skip video re-encoding (copy stream)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Collapsible Advanced Settings */}
+          <div className="rounded-xl border border-slate-800 bg-slate-950/50">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold text-slate-300 hover:text-white"
+            >
+              <span>Advanced Settings (Workers, Audio Mix, Subtitle Sync &amp; FFmpeg)</span>
+              {showAdvanced ? (
+                <ChevronDown className="h-4 w-4 text-slate-400" />
+              ) : (
+                <ChevronRight className="h-4 w-4 text-slate-400" />
+              )}
+            </button>
+
+            {showAdvanced && (
+              <div className="space-y-4 border-t border-slate-800 p-4">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400">
+                      TTS Workers
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={16}
+                      value={draft.workers}
+                      onChange={(e) =>
+                        setDraft({ ...draft, workers: parseInt(e.target.value, 10) || 2 })
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400">
+                      Volume Boost
+                    </label>
+                    <input
+                      type="text"
+                      value={draft.ffmpeg?.volume_boost || '2.0'}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          ffmpeg: { ...draft.ffmpeg, volume_boost: e.target.value },
+                        })
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400">
+                      Audio Bitrate
+                    </label>
+                    <input
+                      type="text"
+                      value={draft.ffmpeg?.audio_bitrate || '192k'}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          ffmpeg: { ...draft.ffmpeg, audio_bitrate: e.target.value },
+                        })
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs text-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  {[
+                    { key: 'use_gpu', label: 'Prefer GPU encoding' },
+                    { key: 'skip_sub_sync', label: 'Skip subtitle sync by default' },
+                    { key: 'drop_song_subtitles', label: 'Drop song / karaoke subtitles' },
+                    { key: 'ai_track_as_first_track', label: 'Set AI audio as Track #0' },
+                  ].map(({ key, label }) => (
+                    <label
+                      key={key}
+                      className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2 text-xs text-slate-300"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(draft[key as keyof GlobalConfig])}
+                        onChange={(e) => setDraft({ ...draft, [key]: e.target.checked })}
+                        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-indigo-500"
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Footer */}
         <div className="flex items-center justify-end gap-2 border-t border-slate-800 bg-slate-950/60 px-5 py-3.5">
           <button
             type="button"
@@ -207,7 +324,11 @@ export function SettingsModal({
             onClick={() => void handleSave()}
             className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:opacity-40"
           >
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            {saving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
             Save Settings
           </button>
         </div>

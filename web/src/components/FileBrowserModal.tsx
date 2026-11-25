@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  ArrowDownAZ,
   ArrowUp,
+  ArrowUpZA,
   CheckSquare,
   FileVideo,
   Folder,
   FolderCheck,
   Loader2,
+  Search,
   Square,
   Subtitles,
   X,
@@ -31,6 +34,8 @@ export function FileBrowserModal({
   const [entries, setEntries] = useState<FSEntry[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pastedPaths, setPastedPaths] = useState('');
+  const [filterText, setFilterText] = useState('');
+  const [sortAsc, setSortAsc] = useState(true);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -43,6 +48,7 @@ export function FileBrowserModal({
       setCurrentPath(res.path);
       setParentPath(res.parent);
       setEntries(res.entries || []);
+      setFilterText('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to browse directory');
     } finally {
@@ -57,6 +63,19 @@ export function FileBrowserModal({
       void loadDir(initialPath || undefined);
     }
   }, [open, initialPath]);
+
+  const visibleEntries = useMemo(() => {
+    const q = filterText.trim().toLowerCase();
+    const filtered = q
+      ? entries.filter((e) => e.name.toLowerCase().includes(q))
+      : entries;
+
+    return [...filtered].sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      const cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      return sortAsc ? cmp : -cmp;
+    });
+  }, [entries, filterText, sortAsc]);
 
   if (!open) return null;
 
@@ -168,6 +187,45 @@ export function FileBrowserModal({
           </button>
         </div>
 
+        {/* Filter & Sort Bar */}
+        <div className="flex items-center gap-2 border-b border-slate-800/80 bg-slate-900/50 px-5 py-2">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+            <input
+              type="text"
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              placeholder="Filter files and folders by name..."
+              className="w-full rounded-lg border border-slate-800 bg-slate-950 py-1.5 pl-8 pr-7 text-xs text-slate-200 placeholder:text-slate-500 focus:border-indigo-500 focus:outline-none"
+            />
+            {filterText && (
+              <button
+                type="button"
+                onClick={() => setFilterText('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-200"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setSortAsc((v) => !v)}
+            title={sortAsc ? 'Sorted by Name A → Z (click for Z → A)' : 'Sorted by Name Z → A (click for A → Z)'}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 hover:text-white"
+          >
+            {sortAsc ? (
+              <ArrowDownAZ className="h-3.5 w-3.5 text-indigo-400" />
+            ) : (
+              <ArrowUpZA className="h-3.5 w-3.5 text-indigo-400" />
+            )}
+            <span>{sortAsc ? 'Name A→Z' : 'Name Z→A'}</span>
+          </button>
+          <span className="shrink-0 text-[11px] text-slate-500">
+            {visibleEntries.length}/{entries.length}
+          </span>
+        </div>
+
         {error && (
           <div className="mx-5 mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
             {error}
@@ -181,13 +239,15 @@ export function FileBrowserModal({
               <Loader2 className="mr-2 h-5 w-5 animate-spin" />
               Loading directory...
             </div>
-          ) : entries.length === 0 ? (
+          ) : visibleEntries.length === 0 ? (
             <div className="py-16 text-center text-xs text-slate-500">
-              No folders or supported video files found here.
+              {filterText
+                ? `No items matching "${filterText}".`
+                : 'No folders or supported video files found here.'}
             </div>
           ) : (
             <div className="space-y-1">
-              {entries.map((entry) => {
+              {visibleEntries.map((entry) => {
                 const isSelected = selected.has(entry.path);
                 const selectable = entry.is_dir || entry.is_video;
                 return (

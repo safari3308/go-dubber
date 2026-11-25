@@ -119,6 +119,18 @@ export const api = {
     request<{ discarded: string }>(`/api/recovery/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
+
+  getLogs: () => request<{ id: number; level: string; job_id: string; message: string; timestamp: string }[]>('/api/logs'),
+  clearLogs: () => request<{ status: string }>('/api/logs', { method: 'DELETE' }),
+  getUnreadNotifications: () =>
+    request<{ id: number; level: 'info' | 'success' | 'warn' | 'error'; title: string; message: string; timestamp: string }[]>(
+      '/api/notifications/unread'
+    ),
+  markNotificationsRead: (upToId: number) =>
+    request<{ status: string }>('/api/notifications/read', {
+      method: 'POST',
+      body: JSON.stringify({ up_to_id: upToId }),
+    }),
 };
 
 export function formatBytes(bytes: number): string {

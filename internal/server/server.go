@@ -18,6 +18,7 @@ import (
 	"github.com/safari3308/go-dubber/internal/media"
 	"github.com/safari3308/go-dubber/internal/queue"
 	"github.com/safari3308/go-dubber/internal/sse"
+	"github.com/safari3308/go-dubber/internal/store"
 	"github.com/safari3308/go-dubber/internal/subtitle"
 	"github.com/safari3308/go-dubber/internal/textutil"
 	"github.com/safari3308/go-dubber/internal/tts"
@@ -32,11 +33,17 @@ type Server struct {
 
 	hw      *hardware.HardwareProfile
 	ws      *workspace.Manager
+	db      *store.DB
 	queue   *queue.Manager
 	broker  *sse.Broker
 	ttsMon  *tts.HealthMonitor
 	webFS   fs.FS
 	devMode bool
+}
+
+// SetStore attaches the SQLite store for persisted logs and unread notifications.
+func (s *Server) SetStore(db *store.DB) {
+	s.db = db
 }
 
 // New creates a configured HTTP Server.
@@ -108,6 +115,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/recovery/{id}/resume", s.handleResumeRecovery)
 	mux.HandleFunc("DELETE /api/recovery/{id}", s.handleDiscardRecovery)
 
+	// Persisted Logs & Missed Notifications (SQLite)
+	mux.HandleFunc("GET /api/logs", s.handleGetLogs)
+	mux.HandleFunc("DELETE /api/logs", s.handleClearLogs)
+	mux.HandleFunc("GET /api/notifications/unread", s.handleGetUnreadNotifications)
+	mux.HandleFunc("POST /api/notifications/read", s.handleMarkNotificationsRead)
+
 	// In-Browser KokoroJS English TTS Fallback Bridge
 	mux.HandleFunc("GET /api/browser-tts/status", s.handleGetBrowserTTSStatus)
 	mux.HandleFunc("POST /api/browser-tts/status", s.handleSetBrowserTTSStatus)
@@ -150,9 +163,21 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	next.Normalize()
 
-	if err := config.SaveConfig(s.configPath, &next); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
-		return
+	if s.db != nil {
+		raw, err := json.Marshal(&next)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode settings: "+err.Error())
+			return
+		}
+		if err := s.db.SaveSettingsJSON(string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save settings to sqlite: "+err.Error())
+			return
+		}
+	} else if s.configPath != "" {
+		if err := config.SaveConfig(s.configPath, &next); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save config: "+err.Error())
+			return
+		}
 	}
 
 	s.cfgMu.Lock()
@@ -161,7 +186,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Immediately re-check TTS health in case api_url or api_token changed
 	go s.ttsMon.CheckNow(r.Context())
-	s.broker.Notify("info", "Settings Saved", "Global configuration updated.")
+	s.broker.Notify("info", "Settings Saved", "Global settings updated.")
 	writeJSON(w, http.StatusOK, &next)
 }
 
@@ -572,12 +597,18 @@ func (s *Server) handleGetRecovery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if jobs == nil {
-		jobs = []workspace.RecoverableJob{}
+	// Exclude the currently active running job so it doesn't appear as "unfinished work" while running
+	snap := s.queue.Snapshot()
+	filtered := make([]workspace.RecoverableJob, 0, len(jobs))
+	for _, j := range jobs {
+		if snap.ActiveJobID != "" && j.State.JobID == snap.ActiveJobID {
+			continue
+		}
+		filtered = append(filtered, j)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"jobs":  jobs,
-		"count": len(jobs),
+		"jobs":  filtered,
+		"count": len(filtered),
 	})
 }
 
@@ -599,6 +630,55 @@ func (s *Server) handleDiscardRecovery(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broker.Notify("info", "Workdir Cleaned", "Discarded unfinished temporary files for "+id)
 	writeJSON(w, http.StatusOK, map[string]string{"discarded": id})
+}
+
+func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, http.StatusOK, []store.LogRecord{})
+		return
+	}
+	logs, err := s.db.ListLogs(100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, logs)
+}
+
+func (s *Server) handleClearLogs(w http.ResponseWriter, r *http.Request) {
+	if s.db != nil {
+		_ = s.db.ClearLogs()
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
+}
+
+func (s *Server) handleGetUnreadNotifications(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, http.StatusOK, []store.NotificationRecord{})
+		return
+	}
+	notifs, err := s.db.ListUnreadNotifications()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, notifs)
+}
+
+func (s *Server) handleMarkNotificationsRead(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	var req struct {
+		UpToID int64 `json:"up_to_id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := s.db.MarkNotificationsRead(req.UpToID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleGetBrowserTTSStatus(w http.ResponseWriter, r *http.Request) {

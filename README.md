@@ -64,26 +64,9 @@ Go Server (cmd/go-dubber)
 
 ## Quick Start
 
-### 1. Configure
-```bash
-cp config.example.json config.json
-```
-Edit `config.json` (or configure everything directly in the Web UI Settings modal):
+### Zero-Config Run (Recommended)
+No `config.json` is needed — settings, queue, activity logs, and notifications are stored automatically in SQLite (`./workdir/dubber.db`). If a legacy `config.json` exists, it is imported into SQLite automatically on first run.
 
-| Field | Description |
-| --- | --- |
-| `nas_dir` | Default root directory for the server file browser |
-| `work_dir` | Local SSD working directory for staging & recovery (default: `./workdir`) |
-| `server_port` | HTTP port for the web app (default: `8080`) |
-| `api_url` | Base URL of your TTS backend (e.g. `http://localhost:8000` for [tts-service](https://github.com/safari3308/tts-service)) |
-| `api_token` | Bearer token sent in `Authorization: Bearer <token>` |
-| `dub_languages` | Default target dubbing languages (`["en", "vi"]`) |
-| `use_gpu` | Prefer GPU encoding when a working hardware encoder is detected |
-| `auto_detect_hardware` | Auto-select optimal FFmpeg parameters for the current machine |
-| `workers` | Concurrent TTS synthesis workers (default: `2`) |
-| `reuse_audio_chunks` | Default state for the **Reuse Chunks** toggle (default: `true`) |
-
-### 2. Build & Run
 ```bash
 # Build React frontend + Go binary with embedded UI
 make build-all
@@ -92,10 +75,10 @@ make build-all
 ./bin/go-dubber
 
 # Optional flags
-./bin/go-dubber --port 9090          # Custom port
-./bin/go-dubber --config my.json     # Custom config file
-./bin/go-dubber --dev                # Enable CORS for Vite dev server
-./bin/go-dubber --cli                # Legacy headless CLI mode
+./bin/go-dubber --port 9090               # Custom port (default: 8080)
+./bin/go-dubber --workdir ./my-workdir    # Custom local SSD working directory
+./bin/go-dubber --dev                     # Enable CORS for Vite dev server
+./bin/go-dubber --cli --config config.json # Legacy headless CLI mode
 ```
 
 ### Development Mode (Hot Reload)

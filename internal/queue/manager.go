@@ -17,6 +17,7 @@ import (
 	"github.com/safari3308/go-dubber/internal/hardware"
 	"github.com/safari3308/go-dubber/internal/media"
 	"github.com/safari3308/go-dubber/internal/sse"
+	"github.com/safari3308/go-dubber/internal/store"
 	"github.com/safari3308/go-dubber/internal/subtitle"
 	"github.com/safari3308/go-dubber/internal/textutil"
 	"github.com/safari3308/go-dubber/internal/tts"
@@ -41,6 +42,7 @@ type Manager struct {
 	getCfg     func() *config.Config
 	hw         *hardware.HardwareProfile
 	ws         *workspace.Manager
+	db         *store.DB
 	broker     *sse.Broker
 	ttsMon     *tts.HealthMonitor
 	browserTTS *tts.BrowserTTSBridge
@@ -75,6 +77,28 @@ func (m *Manager) SetExecutor(fn ExecutorFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.executor = fn
+}
+
+// SetStore attaches a SQLite store for atomic queue persistence, automatically
+// migrating any legacy queue.json items into SQLite on first run.
+func (m *Manager) SetStore(db *store.DB) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.db = db
+	if db == nil {
+		return
+	}
+
+	rows, err := db.LoadQueue()
+	if err == nil && len(rows) > 0 {
+		m.items = rowsToJobItems(rows)
+		return
+	}
+
+	// If SQLite is empty but we loaded legacy queue.json items in memory, migrate them into SQLite.
+	if len(m.items) > 0 {
+		m.savePersistedQueueLocked()
+	}
 }
 
 // SetBrowserTTS attaches an optional in-browser KokoroJS fallback bridge for English TTS.
@@ -789,6 +813,10 @@ func (m *Manager) loadPersistedQueue() {
 }
 
 func (m *Manager) savePersistedQueueLocked() {
+	if m.db != nil {
+		_ = m.db.ReplaceQueue(jobItemsToRows(m.items))
+		return
+	}
 	if m.ws == nil {
 		return
 	}
@@ -801,6 +829,86 @@ func (m *Manager) savePersistedQueueLocked() {
 	if err := os.WriteFile(tmp, data, 0644); err == nil {
 		_ = os.Rename(tmp, dst)
 	}
+}
+
+func jobItemsToRows(items []*JobItem) []store.QueueRow {
+	rows := make([]store.QueueRow, 0, len(items))
+	for i, it := range items {
+		cfgBytes, _ := json.Marshal(it.Config)
+		availBytes, _ := json.Marshal(it.AvailableLanguages)
+		var vInfoStr, metricsStr string
+		if it.VideoInfo != nil {
+			b, _ := json.Marshal(it.VideoInfo)
+			vInfoStr = string(b)
+		}
+		if it.Metrics != nil {
+			b, _ := json.Marshal(it.Metrics)
+			metricsStr = string(b)
+		}
+		rows = append(rows, store.QueueRow{
+			ID:                     it.ID,
+			Position:               i,
+			SourcePath:             it.SourcePath,
+			FileName:               it.FileName,
+			Status:                 string(it.Status),
+			Stage:                  it.Stage,
+			Progress:               it.Progress,
+			Detail:                 it.Detail,
+			Error:                  it.Error,
+			ConfigJSON:             string(cfgBytes),
+			AvailableLanguagesJSON: string(availBytes),
+			VideoInfoJSON:          vInfoStr,
+			MetricsJSON:            metricsStr,
+			CreatedAt:              it.CreatedAt,
+			UpdatedAt:              it.UpdatedAt,
+		})
+	}
+	return rows
+}
+
+func rowsToJobItems(rows []store.QueueRow) []*JobItem {
+	items := make([]*JobItem, 0, len(rows))
+	for _, r := range rows {
+		it := &JobItem{
+			ID:         r.ID,
+			SourcePath: r.SourcePath,
+			FileName:   r.FileName,
+			Status:     JobStatus(r.Status),
+			Stage:      r.Stage,
+			Progress:   r.Progress,
+			Detail:     r.Detail,
+			Error:      r.Error,
+			CreatedAt:  r.CreatedAt,
+			UpdatedAt:  r.UpdatedAt,
+		}
+		_ = json.Unmarshal([]byte(r.ConfigJSON), &it.Config)
+		if it.Config.DubLanguages == nil {
+			it.Config.DubLanguages = []string{}
+		}
+		if r.AvailableLanguagesJSON != "" {
+			_ = json.Unmarshal([]byte(r.AvailableLanguagesJSON), &it.AvailableLanguages)
+		}
+		if r.VideoInfoJSON != "" {
+			var vi media.VideoInfo
+			if err := json.Unmarshal([]byte(r.VideoInfoJSON), &vi); err == nil {
+				it.VideoInfo = &vi
+			}
+		}
+		if r.MetricsJSON != "" {
+			var met JobMetrics
+			if err := json.Unmarshal([]byte(r.MetricsJSON), &met); err == nil {
+				it.Metrics = &met
+			}
+		}
+		switch it.Status {
+		case JobDownloading, JobSyncing, JobSynthesizing, JobRemuxing, JobUploading:
+			it.Status = JobPaused
+			it.Stage = "paused"
+			it.Detail = "Interrupted — ready to resume"
+		}
+		items = append(items, it)
+	}
+	return items
 }
 
 func (m *Manager) publishQueueState() {

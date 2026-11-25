@@ -17,21 +17,44 @@ type Event struct {
 
 // Broker manages fan-out SSE subscriptions for connected clients.
 type Broker struct {
-	mu      sync.RWMutex
-	clients map[chan Event]struct{}
+	mu         sync.RWMutex
+	clients    map[chan Event]struct{}
+	recentLogs []Event
+	maxLogs    int
+	onLog      func(level, jobID, message string) (int64, string)
+	onNotify   func(level, title, message string) int64
+}
+
+// SetPersistence attaches optional callbacks (e.g. SQLite store) to persist logs and notifications.
+func (b *Broker) SetPersistence(
+	onLog func(level, jobID, message string) (int64, string),
+	onNotify func(level, title, message string) int64,
+) {
+	b.mu.Lock()
+	b.onLog = onLog
+	b.onNotify = onNotify
+	b.mu.Unlock()
 }
 
 // NewBroker creates a new SSE event broker.
 func NewBroker() *Broker {
 	return &Broker{
 		clients: make(map[chan Event]struct{}),
+		maxLogs: 100,
 	}
 }
 
 // Subscribe registers a new client and returns its event channel and an unsubscribe function.
 func (b *Broker) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 64)
+	ch := make(chan Event, 256)
 	b.mu.Lock()
+	// Replay recent log entries so newly connected or refreshed tabs see ongoing activity
+	for _, ev := range b.recentLogs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 	b.clients[ch] = struct{}{}
 	b.mu.Unlock()
 
@@ -73,23 +96,65 @@ func (b *Broker) Publish(eventType string, data any) {
 	}
 }
 
-// Notify publishes a user-facing toast notification event.
+// Notify persists (if configured) and publishes a user-facing toast notification event.
 func (b *Broker) Notify(level, title, message string) {
-	b.Publish("notification", map[string]string{
+	b.mu.RLock()
+	persistFn := b.onNotify
+	b.mu.RUnlock()
+
+	var id int64
+	if persistFn != nil {
+		id = persistFn(level, title, message)
+	}
+	b.Publish("notification", map[string]any{
+		"id":      id,
 		"level":   level,
 		"title":   title,
 		"message": message,
 	})
 }
 
-// Log publishes a live log line to connected clients.
+// Log persists (if configured) and publishes a live log line to connected clients.
 func (b *Broker) Log(level, jobID, message string) {
-	b.Publish("log_entry", map[string]any{
-		"level":     level,
-		"job_id":    jobID,
-		"message":   message,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-	})
+	b.mu.RLock()
+	persistFn := b.onLog
+	b.mu.RUnlock()
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	var id int64
+	if persistFn != nil {
+		if persistedID, persistedTS := persistFn(level, jobID, message); persistedID > 0 {
+			id = persistedID
+			if persistedTS != "" {
+				ts = persistedTS
+			}
+		}
+	}
+
+	ev := Event{
+		Type: "log_entry",
+		Data: map[string]any{
+			"id":        id,
+			"level":     level,
+			"job_id":    jobID,
+			"message":   message,
+			"timestamp": ts,
+		},
+		Timestamp: time.Now().UTC(),
+	}
+
+	b.mu.Lock()
+	b.recentLogs = append(b.recentLogs, ev)
+	if len(b.recentLogs) > b.maxLogs {
+		b.recentLogs = b.recentLogs[len(b.recentLogs)-b.maxLogs:]
+	}
+	for ch := range b.clients {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+	b.mu.Unlock()
 }
 
 // ServeHTTP streams events to an HTTP client using Server-Sent Events (text/event-stream).

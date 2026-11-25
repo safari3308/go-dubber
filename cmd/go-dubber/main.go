@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"github.com/safari3308/go-dubber/internal/queue"
 	"github.com/safari3308/go-dubber/internal/server"
 	"github.com/safari3308/go-dubber/internal/sse"
+	"github.com/safari3308/go-dubber/internal/store"
 	"github.com/safari3308/go-dubber/internal/subtitle"
 	"github.com/safari3308/go-dubber/internal/textutil"
 	"github.com/safari3308/go-dubber/internal/tts"
@@ -29,8 +31,9 @@ import (
 )
 
 func main() {
-	configFlag := flag.String("config", "config.json", "Path to config.json")
-	portFlag := flag.Int("port", 0, "HTTP server port (overrides config.json server_port)")
+	configFlag := flag.String("config", "config.json", "Path to legacy config.json (auto-imported into SQLite on first run, or used in --cli mode)")
+	workDirFlag := flag.String("workdir", "./workdir", "Path to local SSD working directory (stores dubber.db, staging videos, and audio chunks)")
+	portFlag := flag.Int("port", 0, "HTTP server port (overrides saved server_port, default 8080)")
 	devFlag := flag.Bool("dev", false, "Enable CORS for Vite frontend dev server")
 	cliFlag := flag.Bool("cli", false, "Run legacy unattended CLI pipeline instead of Web App")
 	flag.Parse()
@@ -42,21 +45,10 @@ func main() {
 		return
 	}
 
-	runWebServer(configPath, *portFlag, *devFlag)
+	runWebServer(configPath, *workDirFlag, *portFlag, *devFlag)
 }
 
-func runWebServer(configPath string, portOverride int, devMode bool) {
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		log.Printf("⚠️ Could not load %s (%v); using defaults and creating config file.", configPath, err)
-		cfg = config.DefaultConfig()
-		_ = config.SaveConfig(configPath, cfg)
-	}
-
-	if portOverride > 0 {
-		cfg.ServerPort = portOverride
-	}
-
+func runWebServer(configPath, workDir string, portOverride int, devMode bool) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -66,17 +58,46 @@ func runWebServer(configPath string, portOverride int, devMode bool) {
 	fmt.Printf("🖥️  Hardware: %s/%s (%d cores) | Encoder: %s (GPU=%v)\n",
 		hw.OS, hw.Arch, hw.CPUCores, hw.EncoderLabel, hw.HasGPU)
 
-	// 2. Initialize persistent workdir & scan for unfinished work
-	ws, err := workspace.NewManager(cfg.WorkDir)
+	// 2. Initialize persistent workdir & SQLite store (zero-config!)
+	ws, err := workspace.NewManager(workDir)
 	if err != nil {
 		log.Fatalf("❌ Failed to initialize workdir: %v", err)
 	}
+	dbPath := filepath.Join(ws.RootDir(), "dubber.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		log.Fatalf("❌ Failed to open SQLite store (%s): %v", dbPath, err)
+	}
+	defer db.Close()
+
+	// 3. Load settings from SQLite (or auto-import legacy config.json, or initialize smart zero-config defaults)
+	cfg := loadOrInitWebConfig(db, configPath, hw, ws.RootDir())
+	if portOverride > 0 {
+		cfg.ServerPort = portOverride
+	}
+
 	if recovered, err := ws.ScanUnfinished(); err == nil && len(recovered) > 0 {
 		fmt.Printf("♻️  Found %d unfinished job(s) in %s ready for recovery in the Web UI!\n", len(recovered), ws.RootDir())
 	}
 
-	// 3. Initialize SSE broker, TTS health monitor, and live-mutable Queue Manager
+	// 4. Initialize SSE broker, TTS health monitor, and Queue Manager
 	broker := sse.NewBroker()
+	broker.SetPersistence(
+		func(level, jobID, message string) (int64, string) {
+			rec, err := db.InsertLog(level, jobID, message)
+			if err != nil {
+				return 0, ""
+			}
+			return rec.ID, rec.Timestamp
+		},
+		func(level, title, message string) int64 {
+			rec, err := db.InsertNotification(level, title, message)
+			if err != nil {
+				return 0
+			}
+			return rec.ID
+		},
+	)
 
 	var srvRefMu sync.RWMutex
 	var srvRef *server.Server
@@ -101,6 +122,7 @@ func runWebServer(configPath string, portOverride int, devMode bool) {
 	ttsMon.Start(ctx)
 
 	qm := queue.NewManager(getCfg, hw, ws, broker, ttsMon)
+	qm.SetStore(db)
 	browserBridge := tts.NewBrowserTTSBridge(func(req tts.BrowserTTSRequest) {
 		broker.Publish("browser_tts_request", req)
 	})
@@ -112,6 +134,7 @@ func runWebServer(configPath string, portOverride int, devMode bool) {
 	}
 
 	srv := server.New(configPath, cfg, hw, ws, qm, broker, ttsMon, webFS, devMode)
+	srv.SetStore(db)
 	srvRefMu.Lock()
 	srvRef = srv
 	srvRefMu.Unlock()
@@ -140,6 +163,53 @@ func runWebServer(configPath string, portOverride int, devMode bool) {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func loadOrInitWebConfig(db *store.DB, legacyConfigPath string, hw *hardware.HardwareProfile, workDir string) *config.Config {
+	// 1. Prefer settings already saved in SQLite
+	if raw, found, err := db.LoadSettingsJSON(); err == nil && found {
+		cfg := config.DefaultConfig()
+		if err := json.Unmarshal([]byte(raw), cfg); err == nil {
+			cfg.WorkDir = workDir
+			cfg.Normalize()
+			return cfg
+		}
+	}
+
+	// 2. First-run auto-import from legacy config.json if present
+	if legacyCfg, err := config.LoadConfig(legacyConfigPath); err == nil {
+		legacyCfg.WorkDir = workDir
+		legacyCfg.Normalize()
+		if raw, err := json.Marshal(legacyCfg); err == nil {
+			_ = db.SaveSettingsJSON(string(raw))
+		}
+		fmt.Printf("📦 Imported settings from %s into SQLite (%s/dubber.db)\n", legacyConfigPath, workDir)
+		return legacyCfg
+	}
+
+	// 3. Zero-config smart defaults (no config.json required!)
+	cfg := config.DefaultConfig()
+	cfg.WorkDir = workDir
+	cfg.DubLanguages = []string{"en", "vi"}
+	if hw != nil {
+		cfg.UseGPU = hw.HasGPU
+		cfg.Workers = hw.RecommendedWorkers
+		cfg.FFmpeg = hw.RecommendedFFmpeg
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		downloads := filepath.Join(home, "Downloads")
+		if info, err := os.Stat(downloads); err == nil && info.IsDir() {
+			cfg.NasDir = downloads
+		} else {
+			cfg.NasDir = home
+		}
+	}
+	cfg.Normalize()
+	if raw, err := json.Marshal(cfg); err == nil {
+		_ = db.SaveSettingsJSON(string(raw))
+	}
+	fmt.Printf("✨ Initialized zero-config defaults in SQLite (%s/dubber.db)\n", workDir)
+	return cfg
 }
 
 // =========================================================================

@@ -39,6 +39,7 @@ export default function App() {
   const [editingJob, setEditingJob] = useState<JobItem | null>(null);
   const [quickPath, setQuickPath] = useState('');
   const [addingQuickPath, setAddingQuickPath] = useState(false);
+  const [sseState, setSseState] = useState<'connected' | 'reconnecting' | 'paused'>('reconnecting');
   const browserKokoro = useBrowserKokoro();
 
   const pushToast = useCallback(
@@ -70,92 +71,195 @@ export default function App() {
     }
   }, []);
 
+  const syncLogsAndNotifications = useCallback(async () => {
+    try {
+      const [dbLogs, unread] = await Promise.all([
+        api.getLogs(),
+        api.getUnreadNotifications(),
+      ]);
+      if (Array.isArray(dbLogs)) {
+        setLogs(dbLogs);
+      }
+      if (Array.isArray(unread) && unread.length > 0) {
+        let maxId = 0;
+        for (const n of unread) {
+          pushToast(n.level || 'info', n.title || 'Notice', n.message || '');
+          if (n.id > maxId) maxId = n.id;
+        }
+        if (maxId > 0) {
+          void api.markNotificationsRead(maxId);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [pushToast]);
+
   // Initial data load
   useEffect(() => {
     void refreshQueue();
     void refreshRecovery();
+    void syncLogsAndNotifications();
     api.getHardware().then(setHardware).catch(() => {});
     api.getTTSStatus().then(setTTSStatus).catch(() => {});
     api.getSettings().then(setSettings).catch(() => {});
-  }, [refreshQueue, refreshRecovery]);
+  }, [refreshQueue, refreshRecovery, syncLogsAndNotifications]);
 
-  // Real-time SSE subscription
+  // Real-time SSE subscription with automatic pause/resume on tab visibility changes
+  // (stays connected in background only when In-Browser KokoroJS is active to serve TTS requests)
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    let es: EventSource | null = null;
 
-    es.addEventListener('tts_status', (e) => {
-      try {
-        setTTSStatus(JSON.parse((e as MessageEvent).data));
-      } catch {
-        // ignore
-      }
-    });
+    const connect = () => {
+      if (es) return;
+      setSseState('reconnecting');
+      const source = new EventSource('/api/events');
+      es = source;
 
-    es.addEventListener('queue_state', (e) => {
-      try {
-        const data = JSON.parse((e as MessageEvent).data);
-        setQueue((prev) => ({
-          ...prev,
-          status: data.status ?? prev.status,
-          active_job_id: data.active_job_id,
-          reuse_audio_chunks:
-            typeof data.reuse_audio_chunks === 'boolean'
-              ? data.reuse_audio_chunks
-              : prev.reuse_audio_chunks,
-        }));
-      } catch {
-        // ignore
-      }
-    });
+      source.onopen = () => {
+        setSseState('connected');
+        void refreshQueue();
+        void refreshRecovery();
+        void syncLogsAndNotifications();
+      };
 
-    es.addEventListener('job_updated', (e) => {
-      try {
-        const updated: JobItem = JSON.parse((e as MessageEvent).data);
-        setQueue((prev) => ({
-          ...prev,
-          items: prev.items.map((it) => (it.id === updated.id ? updated : it)),
-        }));
-        if (updated.status === 'completed' || updated.status === 'paused') {
-          void refreshRecovery();
+      source.onerror = () => {
+        setSseState('reconnecting');
+      };
+
+      source.addEventListener('tts_status', (e) => {
+        try {
+          setTTSStatus(JSON.parse((e as MessageEvent).data));
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
+      });
+
+      source.addEventListener('queue_state', (e) => {
+        try {
+          const data = JSON.parse((e as MessageEvent).data);
+          setQueue((prev) => ({
+            ...prev,
+            status: data.status ?? prev.status,
+            active_job_id: data.active_job_id,
+            reuse_audio_chunks:
+              typeof data.reuse_audio_chunks === 'boolean'
+                ? data.reuse_audio_chunks
+                : prev.reuse_audio_chunks,
+          }));
+          void refreshRecovery();
+        } catch {
+          // ignore
+        }
+      });
+
+      source.addEventListener('job_updated', (e) => {
+        try {
+          const updated: JobItem = JSON.parse((e as MessageEvent).data);
+          let found = false;
+          setQueue((prev) => {
+            const nextItems = prev.items.map((it) => {
+              if (it.id === updated.id) {
+                found = true;
+                return updated;
+              }
+              return it;
+            });
+            return { ...prev, items: nextItems };
+          });
+          if (!found) {
+            void refreshQueue();
+          }
+          if (updated.status === 'completed' || updated.status === 'paused') {
+            void refreshRecovery();
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      source.addEventListener('job_list_changed', () => {
+        void refreshQueue();
+      });
+
+      source.addEventListener('log_entry', (e) => {
+        try {
+          const entry: LogEntry = JSON.parse((e as MessageEvent).data);
+          setLogs((prev) => {
+            const key = `${entry.timestamp}|${entry.job_id}|${entry.message}`;
+            if (prev.some((p) => `${p.timestamp}|${p.job_id}|${p.message}` === key)) {
+              return prev;
+            }
+            return [entry, ...prev].slice(0, 100);
+          });
+        } catch {
+          // ignore
+        }
+      });
+
+      source.addEventListener('notification', (e) => {
+        try {
+          const n = JSON.parse((e as MessageEvent).data);
+          pushToast(n.level || 'info', n.title || 'Notice', n.message || '');
+          if (typeof n.id === 'number' && n.id > 0) {
+            void api.markNotificationsRead(n.id);
+          }
+        } catch {
+          // ignore
+        }
+      });
+
+      source.addEventListener('browser_tts_request', (e) => {
+        try {
+          const req = JSON.parse((e as MessageEvent).data);
+          browserKokoro.handleTTSRequest(req);
+        } catch {
+          // ignore
+        }
+      });
+    };
+
+    const disconnect = () => {
+      if (es) {
+        es.close();
+        es = null;
       }
-    });
+      setSseState('paused');
+    };
 
-    es.addEventListener('job_list_changed', () => {
-      void refreshQueue();
-    });
-
-    es.addEventListener('log_entry', (e) => {
-      try {
-        const entry: LogEntry = JSON.parse((e as MessageEvent).data);
-        setLogs((prev) => [entry, ...prev].slice(0, 100));
-      } catch {
-        // ignore
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // Keep SSE open in background only if Browser KokoroJS is actively serving English TTS
+        if (browserKokoro.state !== 'ready') {
+          disconnect();
+        }
+      } else {
+        connect();
       }
-    });
+    };
 
-    es.addEventListener('notification', (e) => {
-      try {
-        const n = JSON.parse((e as MessageEvent).data);
-        pushToast(n.level || 'info', n.title || 'Notice', n.message || '');
-      } catch {
-        // ignore
+    if (!document.hidden || browserKokoro.state === 'ready') {
+      connect();
+    } else {
+      setSseState('paused');
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (es) {
+        es.close();
+        es = null;
       }
-    });
-
-    es.addEventListener('browser_tts_request', (e) => {
-      try {
-        const req = JSON.parse((e as MessageEvent).data);
-        browserKokoro.handleTTSRequest(req);
-      } catch {
-        // ignore
-      }
-    });
-
-    return () => es.close();
-  }, [pushToast, refreshQueue, refreshRecovery, browserKokoro.handleTTSRequest]);
+    };
+  }, [
+    pushToast,
+    refreshQueue,
+    refreshRecovery,
+    syncLogsAndNotifications,
+    browserKokoro.handleTTSRequest,
+    browserKokoro.state,
+  ]);
 
   const handleCheckTTS = async () => {
     setCheckingTTS(true);
@@ -378,11 +482,30 @@ export default function App() {
               <h2 className="inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider text-slate-400">
                 <Terminal className="h-4 w-4 text-indigo-400" />
                 Live Activity (SSE)
+                <span
+                  title={
+                    sseState === 'connected'
+                      ? 'SSE Connected'
+                      : sseState === 'paused'
+                      ? 'SSE Paused (background tab)'
+                      : 'SSE Reconnecting...'
+                  }
+                  className={`ml-1 inline-block h-2 w-2 rounded-full ${
+                    sseState === 'connected'
+                      ? 'bg-emerald-400'
+                      : sseState === 'paused'
+                      ? 'bg-slate-500'
+                      : 'animate-pulse bg-amber-400'
+                  }`}
+                />
               </h2>
               {logs.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setLogs([])}
+                  onClick={() => {
+                    setLogs([]);
+                    void api.clearLogs();
+                  }}
                   className="text-xs text-slate-500 hover:text-slate-300"
                 >
                   Clear
