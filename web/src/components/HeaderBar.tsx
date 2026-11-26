@@ -17,6 +17,7 @@ import type { HardwareProfile, RunnerStatus, TTSHealthStatus } from '../types/ap
 
 interface HeaderBarProps {
   runnerStatus: RunnerStatus;
+  singleTargetId?: string;
   reuseAudioChunks: boolean;
   ttsStatus: TTSHealthStatus | null;
   browserKokoroState: BrowserKokoroState;
@@ -38,6 +39,7 @@ interface HeaderBarProps {
 
 export function HeaderBar({
   runnerStatus,
+  singleTargetId,
   reuseAudioChunks,
   ttsStatus,
   browserKokoroState,
@@ -57,6 +59,7 @@ export function HeaderBar({
   onCheckTTS,
 }: HeaderBarProps) {
   const isRunning = runnerStatus === 'running';
+  const isRunningSingle = isRunning && Boolean(singleTargetId);
   const isPaused = runnerStatus === 'paused';
   const isTransitioning = runnerStatus === 'pausing' || runnerStatus === 'stopping';
 
@@ -83,7 +86,12 @@ export function HeaderBar({
           <button
             type="button"
             onClick={onCheckTTS}
-            title={ttsStatus?.error || `TTS Server: ${ttsStatus?.url || 'checking...'}`}
+            title={
+              ttsStatus?.error ||
+              (ttsStatus?.transport === 'grpc'
+                ? `TTS gRPC: ${ttsStatus.grpc_url} (HTTP fallback: ${ttsStatus.url})`
+                : `TTS HTTP: ${ttsStatus?.url || 'checking...'}${ttsStatus?.grpc_url ? ` (gRPC ${ttsStatus.grpc_url} unavailable)` : ''}`)
+            }
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
               ttsStatus?.available
                 ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/30 hover:bg-emerald-500/20'
@@ -96,7 +104,10 @@ export function HeaderBar({
               <WifiOff className="h-3.5 w-3.5" />
             )}
             <span>
-              TTS {ttsStatus?.available ? `Online (${ttsStatus.latency_ms}ms)` : 'Offline'}
+              TTS{' '}
+              {ttsStatus?.available
+                ? `Online · ${ttsStatus.transport === 'grpc' ? 'gRPC' : 'HTTP'} (${ttsStatus.latency_ms}ms)`
+                : 'Offline'}
             </span>
             <RefreshCw className={`h-3 w-3 opacity-70 ${checkingTTS ? 'animate-spin' : ''}`} />
           </button>
@@ -183,16 +194,21 @@ export function HeaderBar({
             Add Files / Folder
           </button>
 
-          {/* Start / Resume */}
-          {!isRunning && (
+          {/* Start / Resume / Upgrade Single Run to Start All */}
+          {(!isRunning || isRunningSingle) && (
             <button
               type="button"
               disabled={isTransitioning || !hasPendingJobs}
               onClick={onStart}
+              title={
+                isRunningSingle
+                  ? 'Continue running all remaining pending tasks after the current item finishes (skips completed tasks)'
+                  : 'Start processing all pending tasks in the queue (skips completed tasks)'
+              }
               className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play className="h-3.5 w-3.5 fill-current" />
-              {isPaused ? 'Resume Queue' : 'Start Queue'}
+              {isRunningSingle ? 'Start All' : isPaused ? 'Resume Queue' : 'Start Queue'}
             </button>
           )}
 

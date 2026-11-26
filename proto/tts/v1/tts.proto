@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package tts.v1;
+
+option go_package = "tts-service/gen/go/tts/v1;ttsv1";
+
+// Target synthesis language. Defaults to LANGUAGE_VI when unspecified.
+enum Language {
+  LANGUAGE_UNSPECIFIED = 0;
+  LANGUAGE_VI = 1;
+  LANGUAGE_EN = 2;
+}
+
+// Voice role preset. Defaults to VOICE_ROLE_A when unspecified.
+enum VoiceRole {
+  VOICE_ROLE_UNSPECIFIED = 0;
+  VOICE_ROLE_A = 1;
+  VOICE_ROLE_B = 2;
+}
+
+// Reference track format for subtitle synchronization.
+enum ReferenceType {
+  REFERENCE_TYPE_UNSPECIFIED = 0;
+  REFERENCE_TYPE_SUB = 1;
+  REFERENCE_TYPE_AUDIO = 2;
+}
+
+message SynthesizeRequest {
+  // Dialogue text to synthesize (must be non-empty).
+  string text = 1;
+  // Target language (default: LANGUAGE_VI).
+  Language lang = 2;
+  // Voice role (default: VOICE_ROLE_A).
+  VoiceRole role = 3;
+  // Speech speed multiplier. 0 defaults to 1.0; valid range is (0.25, 4.0].
+  float speed = 4;
+}
+
+message SynthesizeResponse {
+  // Complete 24kHz 16-bit mono PCM WAV payload.
+  bytes audio_wav = 1;
+  // Audio sample rate in Hz (24000).
+  int32 sample_rate = 2;
+  // Audio duration in seconds.
+  float duration_seconds = 3;
+}
+
+message AudioChunk {
+  // Raw signed 16-bit little-endian mono PCM audio samples (pcm_s16le).
+  bytes pcm_data = 1;
+  // Audio sample rate in Hz (24000).
+  int32 sample_rate = 2;
+  // True on the final chunk of the stream.
+  bool is_final = 3;
+}
+
+message SyncSubtitleRequest {
+  // Target SRT subtitle bytes to be synchronized.
+  bytes target_srt = 1;
+  // Reference SRT or audio (e.g. AAC) bytes.
+  bytes reference_data = 2;
+  // Whether reference_data is a subtitle or audio track.
+  ReferenceType ref_type = 3;
+}
+
+message SyncSubtitleMetadata {
+  ReferenceType ref_type = 1;
+}
+
+message SyncSubtitleChunk {
+  oneof payload {
+    // Must be sent first to specify the reference track type.
+    SyncSubtitleMetadata metadata = 1;
+    // Chunk of target SRT bytes.
+    bytes target_srt_chunk = 2;
+    // Chunk of reference SRT or audio bytes.
+    bytes reference_chunk = 3;
+  }
+}
+
+message SyncSubtitleResponse {
+  // Synchronized SRT subtitle bytes.
+  bytes synced_srt = 1;
+}
+
+service TTSService {
+  // Synthesize text into a single complete 24kHz PCM_16 WAV payload.
+  rpc Synthesize(SynthesizeRequest) returns (SynthesizeResponse);
+
+  // Stream raw 24kHz pcm_s16le audio chunks as they are synthesized.
+  rpc SynthesizeStream(SynthesizeRequest) returns (stream AudioChunk);
+
+  // Synchronize a target SRT against a reference audio/subtitle payload (unary).
+  rpc SyncSubtitle(SyncSubtitleRequest) returns (SyncSubtitleResponse);
+
+  // Synchronize a target SRT using client-streaming for large reference files.
+  rpc SyncSubtitleStream(stream SyncSubtitleChunk) returns (SyncSubtitleResponse);
+}

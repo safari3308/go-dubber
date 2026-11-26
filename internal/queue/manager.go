@@ -33,6 +33,7 @@ type Manager struct {
 	items            []*JobItem
 	status           RunnerStatus
 	activeJobID      string
+	singleTargetID   string
 	activeJobCancel  context.CancelFunc
 	activeRemoved    bool
 	pauseRequested   bool
@@ -127,6 +128,7 @@ func (m *Manager) Snapshot() Snapshot {
 	return Snapshot{
 		Status:           m.status,
 		ActiveJobID:      m.activeJobID,
+		SingleTargetID:   m.singleTargetID,
 		ReuseAudioChunks: m.reuseAudioChunks,
 		Items:            items,
 	}
@@ -569,13 +571,53 @@ func (m *Manager) Reorder(ids []string) error {
 	return nil
 }
 
-// Start launches or resumes queue processing.
+// ClearCompleted removes all completed jobs from the queue and returns how many were removed.
+func (m *Manager) ClearCompleted() int {
+	m.mu.Lock()
+	kept := make([]*JobItem, 0, len(m.items))
+	removed := 0
+	for _, it := range m.items {
+		if it.Status == JobCompleted {
+			removed++
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if removed > 0 {
+		m.items = kept
+		m.savePersistedQueueLocked()
+	}
+	m.mu.Unlock()
+
+	if removed > 0 {
+		m.publishListChanged("cleared_completed", nil)
+	}
+	return removed
+}
+
+// Start launches or resumes full queue processing (skipping already completed tasks).
+// If a single item is currently running, this seamlessly upgrades the run to continue
+// processing all remaining pending/paused items after the active item finishes.
 func (m *Manager) Start(reuseAudioChunks *bool) error {
 	m.mu.Lock()
 	if reuseAudioChunks != nil {
 		m.reuseAudioChunks = *reuseAudioChunks
 	}
 	if m.status == RunnerRunning {
+		// If running a single item, upgrade to full queue mode without interrupting the active job
+		if m.singleTargetID != "" {
+			m.singleTargetID = ""
+			for _, it := range m.items {
+				if it.Status == JobPaused {
+					it.Status = JobPending
+					it.UpdatedAt = time.Now().UTC()
+				}
+			}
+			m.savePersistedQueueLocked()
+			m.mu.Unlock()
+			m.publishQueueState()
+			return nil
+		}
 		m.mu.Unlock()
 		return nil
 	}
@@ -584,7 +626,7 @@ func (m *Manager) Start(reuseAudioChunks *bool) error {
 		return fmt.Errorf("queue is currently transitioning (%s), please wait", m.status)
 	}
 
-	// Re-queue any paused items so they resume cleanly
+	// Re-queue any paused items so they resume cleanly (completed items are skipped!)
 	for _, it := range m.items {
 		if it.Status == JobPaused {
 			it.Status = JobPending
@@ -592,12 +634,56 @@ func (m *Manager) Start(reuseAudioChunks *bool) error {
 		}
 	}
 
+	m.singleTargetID = ""
 	m.status = RunnerRunning
 	m.pauseRequested = false
 	m.stopRequested = false
 	m.savePersistedQueueLocked()
 	m.mu.Unlock()
 
+	m.publishQueueState()
+	go m.runLoop()
+	return nil
+}
+
+// StartSingle runs only the specified job item and returns to idle once it finishes.
+func (m *Manager) StartSingle(id string, reuseAudioChunks *bool) error {
+	m.mu.Lock()
+	if reuseAudioChunks != nil {
+		m.reuseAudioChunks = *reuseAudioChunks
+	}
+	if m.status == RunnerRunning || m.status == RunnerPausing || m.status == RunnerStopping {
+		m.mu.Unlock()
+		return fmt.Errorf("queue is currently %s", m.status)
+	}
+
+	var target *JobItem
+	for _, it := range m.items {
+		if it.ID == id {
+			target = it
+			break
+		}
+	}
+	if target == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("job %s not found", id)
+	}
+
+	// Reset target to pending so user can run or re-run this single item
+	target.Status = JobPending
+	target.Stage = "pending"
+	target.Progress = 0
+	target.Error = ""
+	target.UpdatedAt = time.Now().UTC()
+
+	m.singleTargetID = id
+	m.status = RunnerRunning
+	m.pauseRequested = false
+	m.stopRequested = false
+	m.savePersistedQueueLocked()
+	m.mu.Unlock()
+
+	m.publishJobUpdated(*target)
 	m.publishQueueState()
 	go m.runLoop()
 	return nil
@@ -698,23 +784,38 @@ func (m *Manager) runLoop() {
 			return
 		}
 
-		// Pick next pending job
+		// Pick next pending job (or strictly singleTargetID when running a single item)
 		var nextJob *JobItem
-		for _, it := range m.items {
-			if it.Status == JobPending {
-				nextJob = it
-				break
+		if m.singleTargetID != "" {
+			for _, it := range m.items {
+				if it.ID == m.singleTargetID && it.Status == JobPending {
+					nextJob = it
+					break
+				}
+			}
+		} else {
+			for _, it := range m.items {
+				if it.Status == JobPending {
+					nextJob = it
+					break
+				}
 			}
 		}
 
 		if nextJob == nil {
+			wasSingle := m.singleTargetID != ""
 			m.status = RunnerIdle
 			m.activeJobID = ""
+			m.singleTargetID = ""
 			m.activeJobCancel = nil
 			m.mu.Unlock()
 			m.publishQueueState()
 			if m.broker != nil {
-				m.broker.Notify("success", "Queue Completed", "All queued videos have been processed.")
+				if wasSingle {
+					m.broker.Notify("success", "Task Completed", "Selected video has finished processing.")
+				} else {
+					m.broker.Notify("success", "Queue Completed", "All queued videos have been processed.")
+				}
 			}
 			return
 		}
@@ -919,6 +1020,7 @@ func (m *Manager) publishQueueState() {
 	payload := map[string]any{
 		"status":             m.status,
 		"active_job_id":      m.activeJobID,
+		"single_target_id":   m.singleTargetID,
 		"reuse_audio_chunks": m.reuseAudioChunks,
 	}
 	m.mu.Unlock()

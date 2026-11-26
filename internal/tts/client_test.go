@@ -50,6 +50,7 @@ func TestRenderSingleLineTTS_Success(t *testing.T) {
 
 	cfg := &config.Config{
 		ApiUrl:   server.URL,
+		GrpcUrl:  "disabled",
 		ApiToken: "test-token",
 		TTSSpeed: 1.1,
 	}
@@ -73,6 +74,7 @@ func TestRenderSingleLineTTS_ServerError(t *testing.T) {
 
 	cfg := &config.Config{
 		ApiUrl:   server.URL,
+		GrpcUrl:  "disabled",
 		ApiToken: "test-token",
 	}
 
@@ -120,6 +122,7 @@ func TestSyncSubtitleWithServer_Success(t *testing.T) {
 
 	cfg := &config.Config{
 		ApiUrl:   server.URL,
+		GrpcUrl:  "disabled",
 		ApiToken: "test-token",
 	}
 
@@ -169,6 +172,7 @@ func TestRenderTTSFromServer_Success(t *testing.T) {
 
 	cfg := &config.Config{
 		ApiUrl:   server.URL,
+		GrpcUrl:  "disabled",
 		ApiToken: "test-token",
 		TTSSpeed: 1.1,
 	}

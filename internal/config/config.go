@@ -28,6 +28,7 @@ type Config struct {
 	WorkDir             string       `json:"work_dir,omitempty"`
 	ServerPort          int          `json:"server_port,omitempty"`
 	ApiUrl              string       `json:"api_url"`
+	GrpcUrl             string       `json:"grpc_url,omitempty"`
 	ApiToken            string       `json:"api_token"`
 	ForceFallbackSub    bool         `json:"force_fallback_sub"`
 	InteractiveMode     bool         `json:"interactive_mode"`

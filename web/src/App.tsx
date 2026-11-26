@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ClipboardPaste, Plus, Terminal, X } from 'lucide-react';
+import { CheckCheck, ClipboardPaste, Plus, Terminal, X } from 'lucide-react';
 import { api } from './api/client';
 import { FileBrowserModal } from './components/FileBrowserModal';
 import { HeaderBar } from './components/HeaderBar';
@@ -142,6 +142,7 @@ export default function App() {
             ...prev,
             status: data.status ?? prev.status,
             active_job_id: data.active_job_id,
+            single_target_id: data.single_target_id,
             reuse_audio_chunks:
               typeof data.reuse_audio_chunks === 'boolean'
                 ? data.reuse_audio_chunks
@@ -301,6 +302,27 @@ export default function App() {
     }
   };
 
+  const handleStartSingle = async (id: string) => {
+    try {
+      const snap = await api.startSingleItem(id, queue.reuse_audio_chunks);
+      setQueue(snap);
+    } catch (err) {
+      pushToast('error', 'Failed to Start Item', err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
+
+  const handleClearCompleted = async () => {
+    try {
+      const res = await api.clearCompletedQueue();
+      setQueue(res.queue);
+      if (res.removed_count > 0) {
+        pushToast('info', 'Cleared Completed', `Removed ${res.removed_count} completed task(s).`);
+      }
+    } catch (err) {
+      pushToast('error', 'Clear Failed', err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
+
   const handlePause = async () => {
     try {
       const snap = await api.pauseQueue();
@@ -401,11 +423,13 @@ export default function App() {
   const hasPendingJobs = queue.items.some(
     (it) => it.status === 'pending' || it.status === 'paused'
   );
+  const completedCount = queue.items.filter((it) => it.status === 'completed').length;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <HeaderBar
         runnerStatus={queue.status}
+        singleTargetId={queue.single_target_id}
         reuseAudioChunks={queue.reuse_audio_chunks}
         ttsStatus={ttsStatus}
         browserKokoroState={browserKokoro.state}
@@ -435,11 +459,23 @@ export default function App() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* Queue Column */}
           <section className="space-y-3 lg:col-span-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
                 Dubbing Queue ({queue.items.length})
               </h2>
-              <span className="text-xs capitalize text-slate-500">Status: {queue.status}</span>
+              <div className="flex items-center gap-3">
+                {completedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void handleClearCompleted()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1 text-xs font-medium text-emerald-300 transition hover:border-emerald-500/40 hover:bg-emerald-500/10"
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" />
+                    Clear Completed ({completedCount})
+                  </button>
+                )}
+                <span className="text-xs capitalize text-slate-500">Status: {queue.status}</span>
+              </div>
             </div>
 
             {/* Quick Paste Path Bar (macOS Copy as Pathname) */}
@@ -468,6 +504,8 @@ export default function App() {
             <QueueList
               items={queue.items}
               activeJobId={queue.active_job_id}
+              runnerRunning={queue.status === 'running' || queue.status === 'pausing' || queue.status === 'stopping'}
+              onStartSingle={(id) => void handleStartSingle(id)}
               onEdit={setEditingJob}
               onRemove={(id) => void handleRemoveItem(id)}
               onMove={(idx, dir) => void handleMoveItem(idx, dir)}

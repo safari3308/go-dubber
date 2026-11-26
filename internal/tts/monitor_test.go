@@ -24,7 +24,7 @@ func TestHealthMonitor_StateTransitions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := &config.Config{ApiUrl: srv.URL}
+	cfg := &config.Config{ApiUrl: srv.URL, GrpcUrl: "disabled"}
 	var events []HealthStatus
 	mon := NewHealthMonitor(func() *config.Config { return cfg }, 50*time.Millisecond, func(st HealthStatus) {
 		events = append(events, st)

@@ -17,6 +17,7 @@ export interface GlobalConfig {
   work_dir?: string;
   server_port?: number;
   api_url: string;
+  grpc_url?: string;
   api_token: string;
   force_fallback_sub: boolean;
   interactive_mode: boolean;
@@ -62,6 +63,8 @@ export interface HardwareProfile {
 export interface TTSHealthStatus {
   available: boolean;
   url: string;
+  grpc_url?: string;
+  transport?: 'grpc' | 'http' | '';
   latency_ms: number;
   last_checked: string;
   error?: string;
@@ -199,6 +202,7 @@ export interface JobItem {
 export interface QueueSnapshot {
   status: RunnerStatus;
   active_job_id?: string;
+  single_target_id?: string;
   reuse_audio_chunks: boolean;
   items: JobItem[];
 }

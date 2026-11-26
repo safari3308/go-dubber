@@ -129,6 +129,7 @@ type JobItem struct {
 type Snapshot struct {
 	Status           RunnerStatus `json:"status"`
 	ActiveJobID      string       `json:"active_job_id,omitempty"`
+	SingleTargetID   string       `json:"single_target_id,omitempty"`
 	ReuseAudioChunks bool         `json:"reuse_audio_chunks"`
 	Items            []JobItem    `json:"items"`
 }

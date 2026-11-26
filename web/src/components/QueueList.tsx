@@ -7,6 +7,7 @@ import {
   FileVideo,
   Loader2,
   PauseCircle,
+  Play,
   Sliders,
   Trash2,
   Upload,
@@ -19,6 +20,8 @@ import type { AvailableLanguageInfo, JobItem, JobStatus } from '../types/api';
 interface QueueListProps {
   items: JobItem[];
   activeJobId?: string;
+  runnerRunning: boolean;
+  onStartSingle: (id: string) => void;
   onEdit: (job: JobItem) => void;
   onRemove: (id: string) => void;
   onMove: (index: number, dir: -1 | 1) => void;
@@ -73,6 +76,8 @@ interface PendingUpload {
 export function QueueList({
   items,
   activeJobId,
+  runnerRunning,
+  onStartSingle,
   onEdit,
   onRemove,
   onMove,
@@ -303,6 +308,22 @@ export function QueueList({
 
               {/* Actions */}
               <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={runnerRunning}
+                  onClick={() => onStartSingle(job.id)}
+                  title={
+                    runnerRunning
+                      ? 'Another task is currently running'
+                      : job.status === 'completed'
+                      ? 'Re-run only this item'
+                      : 'Start only this item'
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600/20 px-2.5 py-1.5 text-xs font-medium text-indigo-300 ring-1 ring-indigo-500/40 hover:bg-indigo-600/35 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <Play className="h-3 w-3 fill-current" />
+                  Run
+                </button>
                 <button
                   type="button"
                   disabled={idx === 0}

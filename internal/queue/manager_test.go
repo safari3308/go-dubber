@@ -118,3 +118,80 @@ func TestQueueManager_LiveMutationPauseAndResume(t *testing.T) {
 		t.Fatalf("expected 2 completed jobs, got %d", completedCount.Load())
 	}
 }
+
+func TestQueueManager_StartSingleUpgradeToAllAndClearCompleted(t *testing.T) {
+	tempDir := t.TempDir()
+	v1 := filepath.Join(tempDir, "ep01.mkv")
+	v2 := filepath.Join(tempDir, "ep02.mkv")
+	v3 := filepath.Join(tempDir, "ep03.mkv")
+	for _, p := range []string{v1, v2, v3} {
+		_ = os.WriteFile(p, []byte("dummy"), 0644)
+	}
+
+	cfg := config.DefaultConfig()
+	ws, _ := workspace.NewManager(filepath.Join(tempDir, "workdir"))
+	mgr := NewManager(func() *config.Config { return cfg }, nil, ws, sse.NewBroker(), nil)
+
+	ranCh := make(chan string, 10)
+	mgr.SetExecutor(func(ctx context.Context, m *Manager, job *JobItem, reuseChunks bool) error {
+		ranCh <- job.FileName
+		time.Sleep(80 * time.Millisecond)
+		return nil
+	})
+
+	added, err := mgr.AddPaths([]string{v1, v2, v3}, nil)
+	if err != nil || len(added) != 3 {
+		t.Fatalf("AddPaths failed: %v", err)
+	}
+
+	// 1. Start ONLY ep02
+	if err := mgr.StartSingle(added[1].ID, nil); err != nil {
+		t.Fatalf("StartSingle(ep02) failed: %v", err)
+	}
+	waitIdle := func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if mgr.Snapshot().Status == RunnerIdle {
+				return
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for RunnerIdle, status=%s", mgr.Snapshot().Status)
+	}
+	waitIdle()
+
+	if got := <-ranCh; got != "ep02.mkv" {
+		t.Fatalf("expected ep02.mkv to run first, got %s", got)
+	}
+	snap := mgr.Snapshot()
+	if snap.Items[0].Status != JobPending || snap.Items[1].Status != JobCompleted || snap.Items[2].Status != JobPending {
+		t.Fatalf("unexpected statuses after StartSingle: %s, %s, %s", snap.Items[0].Status, snap.Items[1].Status, snap.Items[2].Status)
+	}
+
+	// 2. StartSingle(ep01) and while it is running, click Start All -> should finish ep01, SKIP completed ep02, and run ep03!
+	if err := mgr.StartSingle(added[0].ID, nil); err != nil {
+		t.Fatalf("StartSingle(ep01) failed: %v", err)
+	}
+	if got := <-ranCh; got != "ep01.mkv" {
+		t.Fatalf("expected ep01.mkv to start, got %s", got)
+	}
+	if err := mgr.Start(nil); err != nil {
+		t.Fatalf("Start (upgrade from single to all) failed: %v", err)
+	}
+	waitIdle()
+
+	if got := <-ranCh; got != "ep03.mkv" {
+		t.Fatalf("expected ep03.mkv to run next (skipping completed ep02.mkv), got %s", got)
+	}
+	select {
+	case extra := <-ranCh:
+		t.Fatalf("unexpected extra job executed: %s", extra)
+	default:
+	}
+
+	// 3. ClearCompleted removes all 3 completed items
+	removed := mgr.ClearCompleted()
+	if removed != 3 || len(mgr.Snapshot().Items) != 0 {
+		t.Fatalf("ClearCompleted removed=%d remaining=%d; want 3 and 0", removed, len(mgr.Snapshot().Items))
+	}
+}

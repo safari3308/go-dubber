@@ -254,42 +254,86 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		}
 
 		// 4c. Optional Google AI (Gemini) subtitle cleanup / translation for TTS
+		//     If source is .ass/.ssa, use native ASS parser to produce BOTH:
+		//       - gemini_<lang>.ass (preserving styles, signs & descriptions for video embed)
+		//       - gemini_<lang>.srt (strictly spoken dialogue for clean TTS voiceover)
+		geminiEmbedASS := ""
 		if job.Config.UseGemini && (job.Config.GeminiCleanForTTS || job.Config.GeminiTranslate) {
 			if strings.TrimSpace(effCfg.GeminiAPIKey) == "" {
 				logWarn(fmt.Sprintf("[%s] Gemini AI is enabled for this item, but no Gemini API key is configured in Settings — skipping AI subtitle pass.", lang))
 			} else {
 				geminiSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.srt", lang))
+				geminiAss := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.ass", lang))
 				if textutil.FileExists(geminiSrt) {
 					ttsSrtPath = geminiSrt
+					if textutil.FileExists(geminiAss) {
+						geminiEmbedASS = geminiAss
+					}
 					logInfo(fmt.Sprintf("[%s] Reusing cached Gemini-processed subtitle.", lang))
 				} else {
 					state.Stage = "gemini_sub"
 					_ = ws.SaveState(state)
-					logInfo(fmt.Sprintf("[%s] Processing subtitle with Google AI (clean=%v, translate=%v)...", lang, job.Config.GeminiCleanForTTS, job.Config.GeminiTranslate))
-					mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", basePct+langSpan*0.08, fmt.Sprintf("[%s] Processing subtitle with Google AI...", lang))
-
 					gClient := gemini.NewClient(effCfg.GeminiAPIKey)
 					style := job.Config.GeminiStyle
 					if style == "" {
 						style = effCfg.GeminiStyle
 					}
-					totalCues, keptCues, gErr := gClient.ProcessSRTFile(ctx, ttsSrtPath, geminiSrt, gemini.ProcessOptions{
+					opts := gemini.ProcessOptions{
 						TargetLang:  lang,
 						Translate:   job.Config.GeminiTranslate,
 						CleanForTTS: job.Config.GeminiCleanForTTS,
 						Style:       style,
-					}, func(done, total int) {
+					}
+					progressFn := func(done, total int) {
 						pct := basePct + langSpan*(0.08+0.04*(float64(done)/float64(max(total, 1))))
 						mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", pct, fmt.Sprintf("[%s] Google AI subtitle [%d/%d]...", lang, done, total))
-					})
-					if gErr != nil {
-						if ctx.Err() != nil {
-							return ctx.Err()
+					}
+
+					if spec.TTSSub.IsASS() {
+						rawASS := filepath.Join(subsDir, fmt.Sprintf("raw_%s.ass", lang))
+						assReady := false
+						if spec.TTSSub.Type == "embedded" {
+							if err := media.ExtractEmbeddedSubtitleCopyContext(ctx, localVideoPath, rawASS, spec.TTSSub.EmbeddedIndex); err == nil {
+								assReady = true
+							}
+						} else if textutil.FileExists(spec.TTSSub.Path) {
+							rawASS = spec.TTSSub.Path
+							assReady = true
 						}
-						logWarn(fmt.Sprintf("[%s] Google AI subtitle processing failed (%v), continuing with original SRT.", lang, gErr))
-					} else if keptCues > 0 {
-						ttsSrtPath = geminiSrt
-						logInfo(fmt.Sprintf("[%s] Google AI processed subtitle (%d -> %d cues kept).", lang, totalCues, keptCues))
+
+						if assReady {
+							logInfo(fmt.Sprintf("[%s] Processing ASS natively with Google AI (style=%s, clean=%v, translate=%v)...", lang, style, opts.CleanForTTS, opts.Translate))
+							mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", basePct+langSpan*0.08, fmt.Sprintf("[%s] Processing ASS with Google AI...", lang))
+							res, gErr := gClient.ProcessASSFile(ctx, rawASS, geminiAss, geminiSrt, opts, progressFn)
+							if gErr != nil {
+								if ctx.Err() != nil {
+									return ctx.Err()
+								}
+								logWarn(fmt.Sprintf("[%s] Google AI ASS processing failed (%v), continuing with original SRT.", lang, gErr))
+							} else if res.DialogueCount > 0 {
+								ttsSrtPath = geminiSrt
+								if opts.Translate {
+									geminiEmbedASS = geminiAss
+								}
+								logInfo(fmt.Sprintf("[%s] Google AI ASS done: %d dialogue (TTS), %d signs kept in ASS, %d skipped (filter_only=%v).", lang, res.DialogueCount, res.SignCount, res.SkippedCount, res.FilterOnlyMode))
+							}
+						}
+					}
+
+					// Standard SRT path (or fallback if ASS extraction wasn't available)
+					if ttsSrtPath != geminiSrt {
+						logInfo(fmt.Sprintf("[%s] Processing SRT with Google AI (clean=%v, translate=%v)...", lang, opts.CleanForTTS, opts.Translate))
+						mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", basePct+langSpan*0.08, fmt.Sprintf("[%s] Processing subtitle with Google AI...", lang))
+						totalCues, keptCues, gErr := gClient.ProcessSRTFile(ctx, ttsSrtPath, geminiSrt, opts, progressFn)
+						if gErr != nil {
+							if ctx.Err() != nil {
+								return ctx.Err()
+							}
+							logWarn(fmt.Sprintf("[%s] Google AI subtitle processing failed (%v), continuing with original SRT.", lang, gErr))
+						} else if keptCues > 0 {
+							ttsSrtPath = geminiSrt
+							logInfo(fmt.Sprintf("[%s] Google AI processed subtitle (%d -> %d cues kept).", lang, totalCues, keptCues))
+						}
 					}
 				}
 			}
@@ -301,11 +345,30 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		if spec.EmbedSub != nil && spec.EmbedSub.IsValid() && spec.EmbedSub.Type == "external" {
 			isExternalEmbed = true
 			if !spec.EmbedSub.IsASS() && spec.EmbedSub.Path == spec.TTSSub.Path {
-				// Same non-ASS file -> use synced SRT if available
+				// Same non-ASS file -> use synced/processed SRT if available
 				embedSubPath = ttsSrtPath
 			} else {
 				// Separate embed subtitle (e.g. .ass with signs/descriptions) -> preserve original file!
 				embedSubPath = spec.EmbedSub.Path
+			}
+		} else if geminiEmbedASS != "" && textutil.FileExists(geminiEmbedASS) {
+			// Embed the translated styled ASS (with signs & descriptions!)
+			embedSubPath = geminiEmbedASS
+			isExternalEmbed = true
+			logInfo(fmt.Sprintf("[%s] Embedding Google AI translated ASS subtitle (with signs & descriptions).", lang))
+		} else if job.Config.UseGemini && job.Config.GeminiTranslate {
+			// If Gemini translated a subtitle and the video has no native subtitle in target lang, embed the translated SRT
+			hasNativeEmbedded := false
+			for _, sub := range localInfo.EmbeddedSubStreams {
+				if subtitle.IsSubMatchingLanguage(sub.Language, sub.Title, lang) {
+					hasNativeEmbedded = true
+					break
+				}
+			}
+			if !hasNativeEmbedded && textutil.FileExists(ttsSrtPath) {
+				embedSubPath = ttsSrtPath
+				isExternalEmbed = true
+				logInfo(fmt.Sprintf("[%s] Embedding translated subtitle into video (no native '%s' subtitle track existed).", lang, lang))
 			}
 		}
 

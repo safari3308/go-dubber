@@ -123,6 +123,17 @@ export const api = {
         reuseAudioChunks === undefined ? {} : { reuse_audio_chunks: reuseAudioChunks }
       ),
     }),
+  startSingleItem: (id: string, reuseAudioChunks?: boolean) =>
+    request<QueueSnapshot>(`/api/queue/items/${encodeURIComponent(id)}/start`, {
+      method: 'POST',
+      body: JSON.stringify(
+        reuseAudioChunks === undefined ? {} : { reuse_audio_chunks: reuseAudioChunks }
+      ),
+    }),
+  clearCompletedQueue: () =>
+    request<{ removed_count: number; queue: QueueSnapshot }>('/api/queue/clear-completed', {
+      method: 'POST',
+    }),
   pauseQueue: () => request<QueueSnapshot>('/api/queue/pause', { method: 'POST' }),
   stopQueue: () => request<QueueSnapshot>('/api/queue/stop', { method: 'POST' }),
   setReuseChunks: (reuseAudioChunks: boolean) =>

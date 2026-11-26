@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,7 +106,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/queue/items/{id}", s.handleUpdateQueueItem)
 	mux.HandleFunc("POST /api/queue/items/{id}/subtitles", s.handleUploadQueueSubtitle)
 	mux.HandleFunc("POST /api/queue/items/{id}/gemini-subtitle", s.handleGeminiQueueSubtitle)
+	mux.HandleFunc("POST /api/queue/items/{id}/start", s.handleQueueStartSingle)
 	mux.HandleFunc("DELETE /api/queue/items/{id}", s.handleDeleteQueueItem)
+	mux.HandleFunc("POST /api/queue/clear-completed", s.handleQueueClearCompleted)
 	mux.HandleFunc("POST /api/queue/reorder", s.handleReorderQueue)
 	mux.HandleFunc("POST /api/queue/start", s.handleQueueStart)
 	mux.HandleFunc("POST /api/queue/pause", s.handleQueuePause)
@@ -186,8 +189,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	s.cfg = &next
 	s.cfgMu.Unlock()
 
-	// Immediately re-check TTS health in case api_url or api_token changed
-	go s.ttsMon.CheckNow(r.Context())
+	// Immediately re-check TTS health in case api_url, grpc_url, or api_token changed
+	tts.ResetGRPCFallbackCache()
+	go s.ttsMon.CheckNow(context.Background())
 	s.broker.Notify("info", "Settings Saved", "Global settings updated.")
 	writeJSON(w, http.StatusOK, &next)
 }
@@ -544,32 +548,6 @@ func (s *Server) handleGeminiQueueSubtitle(w http.ResponseWriter, r *http.Reques
 	}
 
 	subsDir := s.ws.SubsDir(id)
-	rawSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_src_%s.srt", lang))
-	if req.SourceType == "embedded" {
-		if err := media.ExtractEmbeddedSubtitleContext(r.Context(), targetJob.SourcePath, rawSrt, req.EmbeddedIndex); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	} else {
-		extPath := textutil.SanitizePath(req.ExternalPath)
-		if extPath == "" {
-			writeError(w, http.StatusBadRequest, "external_path is required")
-			return
-		}
-		if strings.ToLower(filepath.Ext(extPath)) == ".srt" {
-			if err := textutil.CopyFileContext(r.Context(), extPath, rawSrt, nil); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		} else {
-			if err := media.ConvertToSRTContext(r.Context(), extPath, rawSrt); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
-	}
-
-	outSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.srt", lang))
 	style := strings.TrimSpace(req.Style)
 	if style == "" {
 		style = targetJob.Config.GeminiStyle
@@ -578,25 +556,147 @@ func (s *Server) handleGeminiQueueSubtitle(w http.ResponseWriter, r *http.Reques
 		style = cfg.GeminiStyle
 	}
 	gClient := gemini.NewClient(cfg.GeminiAPIKey)
-	totalCues, keptCues, err := gClient.ProcessSRTFile(r.Context(), rawSrt, outSrt, gemini.ProcessOptions{
+	gOpts := gemini.ProcessOptions{
 		TargetLang:  lang,
 		Translate:   req.Translate,
 		CleanForTTS: req.CleanForTTS,
 		Style:       style,
-	}, nil)
-	_ = os.Remove(rawSrt)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+	}
+
+	// Detect if source subtitle is ASS/SSA so we can preserve styles, signs & descriptions in a dual output!
+	sourceIsASS := false
+	if req.SourceType == "embedded" && targetJob.VideoInfo != nil {
+		for _, sub := range targetJob.VideoInfo.EmbeddedSubStreams {
+			if sub.SubIndex == req.EmbeddedIndex {
+				c := strings.ToLower(sub.CodecName)
+				if c == "ass" || c == "ssa" {
+					sourceIsASS = true
+				}
+				break
+			}
+		}
+	} else if req.SourceType != "embedded" {
+		ext := strings.ToLower(filepath.Ext(textutil.SanitizePath(req.ExternalPath)))
+		if ext == ".ass" || ext == ".ssa" {
+			sourceIsASS = true
+		}
+	}
+
+	outSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.srt", lang))
+	outAss := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.ass", lang))
+
+	var totalCues, keptCues int
+	var generatedASS bool
+
+	if sourceIsASS {
+		rawASS := filepath.Join(subsDir, fmt.Sprintf("gemini_src_%s.ass", lang))
+		if req.SourceType == "embedded" {
+			if err := media.ExtractEmbeddedSubtitleCopyContext(r.Context(), targetJob.SourcePath, rawASS, req.EmbeddedIndex); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			defer os.Remove(rawASS)
+		} else {
+			rawASS = textutil.SanitizePath(req.ExternalPath)
+		}
+
+		res, err := gClient.ProcessASSFile(r.Context(), rawASS, outAss, outSrt, gOpts, nil)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		totalCues = res.TotalEvents
+		keptCues = res.DialogueCount
+		generatedASS = true
+	} else {
+		rawSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_src_%s.srt", lang))
+		if req.SourceType == "embedded" {
+			if err := media.ExtractEmbeddedSubtitleContext(r.Context(), targetJob.SourcePath, rawSrt, req.EmbeddedIndex); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else {
+			extPath := textutil.SanitizePath(req.ExternalPath)
+			if extPath == "" {
+				writeError(w, http.StatusBadRequest, "external_path is required")
+				return
+			}
+			if strings.ToLower(filepath.Ext(extPath)) == ".srt" {
+				if err := textutil.CopyFileContext(r.Context(), extPath, rawSrt, nil); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			} else {
+				if err := media.ConvertToSRTContext(r.Context(), extPath, rawSrt); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+		}
+		var err error
+		totalCues, keptCues, err = gClient.ProcessSRTFile(r.Context(), rawSrt, outSrt, gOpts, nil)
+		_ = os.Remove(rawSrt)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	}
+
+	if generatedASS {
+		// Dual output: clean dialogue-only SRT for TTS + styled translated ASS (with signs & descriptions) for Embed!
+		if _, err := s.queue.AttachUploadedSubtitle(id, lang, "tts", outSrt); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		updated, err := s.queue.AttachUploadedSubtitle(id, lang, "embed", outAss)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.broker.Notify("success", "Google AI Dual Subtitles Ready", fmt.Sprintf("Generated clean TTS SRT (%d dialogue) + styled ASS with signs/descriptions (%s).", keptCues, strings.ToUpper(lang)))
+		writeJSON(w, http.StatusOK, map[string]any{
+			"job":        updated,
+			"total_cues": totalCues,
+			"kept_cues":  keptCues,
+			"path":       outSrt,
+			"ass_path":   outAss,
+		})
 		return
 	}
 
-	updated, err := s.queue.AttachUploadedSubtitle(id, lang, "tts", outSrt)
+	// Non-ASS source: attach for both TTS & Embed if no native/embed sub exists for lang
+	attachRole := "tts"
+	hasEmbedSub := false
+	for _, sp := range targetJob.Config.LanguageSpecs {
+		if strings.EqualFold(sp.Language, lang) && sp.EmbedSub != nil && sp.EmbedSub.IsValid() {
+			hasEmbedSub = true
+			break
+		}
+	}
+	hasNativeEmbedded := false
+	if targetJob.VideoInfo != nil {
+		for _, sub := range targetJob.VideoInfo.EmbeddedSubStreams {
+			if subtitle.IsSubMatchingLanguage(sub.Language, sub.Title, lang) {
+				hasNativeEmbedded = true
+				break
+			}
+		}
+	}
+	if req.Translate && !hasEmbedSub && !hasNativeEmbedded {
+		attachRole = "both"
+	}
+
+	updated, err := s.queue.AttachUploadedSubtitle(id, lang, attachRole, outSrt)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	s.broker.Notify("success", "Google AI Subtitle Ready", fmt.Sprintf("Processed %d -> %d cues (%s) and attached as TTS subtitle.", totalCues, keptCues, strings.ToUpper(lang)))
+	roleDesc := "TTS subtitle"
+	if attachRole == "both" {
+		roleDesc = "TTS & Embed subtitle"
+	}
+	s.broker.Notify("success", "Google AI Subtitle Ready", fmt.Sprintf("Processed %d -> %d cues (%s) and attached as %s.", totalCues, keptCues, strings.ToUpper(lang), roleDesc))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"job":        updated,
 		"total_cues": totalCues,
@@ -676,6 +776,27 @@ func (s *Server) handleQueueStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.queue.Snapshot())
+}
+
+func (s *Server) handleQueueStartSingle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		ReuseAudioChunks *bool `json:"reuse_audio_chunks,omitempty"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := s.queue.StartSingle(id, req.ReuseAudioChunks); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.queue.Snapshot())
+}
+
+func (s *Server) handleQueueClearCompleted(w http.ResponseWriter, r *http.Request) {
+	removed := s.queue.ClearCompleted()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"removed_count": removed,
+		"queue":         s.queue.Snapshot(),
+	})
 }
 
 func (s *Server) handleQueuePause(w http.ResponseWriter, r *http.Request) {

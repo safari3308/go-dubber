@@ -90,7 +90,7 @@ export function SettingsModal({
           <div className="space-y-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-xs font-medium text-slate-300">TTS Backend URL</label>
+                <label className="block text-xs font-medium text-slate-300">TTS HTTP URL</label>
                 <input
                   type="text"
                   value={draft.api_url}
@@ -99,22 +99,38 @@ export function SettingsModal({
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Optional for English if using Browser EN (KokoroJS).
+                  Fallback HTTP endpoint (also optional for EN if using Browser KokoroJS).
                 </p>
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-slate-300">
-                  TTS API Token <span className="text-slate-500">(optional)</span>
+                  TTS gRPC Address <span className="text-slate-500">(optional)</span>
                 </label>
                 <input
-                  type="password"
-                  value={draft.api_token}
-                  onChange={(e) => setDraft({ ...draft, api_token: e.target.value })}
-                  placeholder="Bearer token"
+                  type="text"
+                  value={draft.grpc_url || ''}
+                  onChange={(e) => setDraft({ ...draft, grpc_url: e.target.value })}
+                  placeholder="Auto (<host>:50051)"
                   className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Preferred when available; auto-falls back to HTTP. Use &quot;disabled&quot; for HTTP-only.
+                </p>
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-300">
+                TTS API Token <span className="text-slate-500">(optional)</span>
+              </label>
+              <input
+                type="password"
+                value={draft.api_token}
+                onChange={(e) => setDraft({ ...draft, api_token: e.target.value })}
+                placeholder="Bearer token (shared by gRPC & HTTP)"
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
+              />
             </div>
 
             <div>

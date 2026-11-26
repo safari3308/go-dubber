@@ -12,6 +12,8 @@ import (
 type HealthStatus struct {
 	Available   bool      `json:"available"`
 	URL         string    `json:"url"`
+	GrpcURL     string    `json:"grpc_url,omitempty"`
+	Transport   string    `json:"transport,omitempty"` // "grpc" or "http"
 	LatencyMs   int64     `json:"latency_ms"`
 	LastChecked time.Time `json:"last_checked"`
 	Error       string    `json:"error,omitempty"`
@@ -51,12 +53,14 @@ func (m *HealthMonitor) Status() HealthStatus {
 func (m *HealthMonitor) CheckNow(ctx context.Context) HealthStatus {
 	cfg := m.getCfg()
 	start := time.Now()
-	err := CheckServerHealthContext(ctx, cfg)
+	transport, _, err := CheckServerHealthWithTransportContext(ctx, cfg)
 	latency := time.Since(start).Milliseconds()
 
 	next := HealthStatus{
 		Available:   err == nil,
 		URL:         cfg.ApiUrl,
+		GrpcURL:     ResolveGrpcAddr(cfg),
+		Transport:   transport,
 		LatencyMs:   latency,
 		LastChecked: time.Now().UTC(),
 	}
@@ -65,7 +69,11 @@ func (m *HealthMonitor) CheckNow(ctx context.Context) HealthStatus {
 	}
 
 	m.mu.Lock()
-	changed := !m.initialized || m.status.Available != next.Available || m.status.URL != next.URL
+	changed := !m.initialized ||
+		m.status.Available != next.Available ||
+		m.status.URL != next.URL ||
+		m.status.GrpcURL != next.GrpcURL ||
+		m.status.Transport != next.Transport
 	m.status = next
 	m.initialized = true
 	m.mu.Unlock()

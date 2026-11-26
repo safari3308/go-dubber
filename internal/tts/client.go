@@ -30,6 +30,7 @@ func RenderSingleLineTTS(cfg *config.Config, text, lang, role string) ([]byte, e
 }
 
 // RenderSingleLineTTSContext sends a single dialogue text line to the TTS server with context cancellation.
+// It prefers gRPC when available and automatically falls back to HTTP if gRPC is unreachable.
 func RenderSingleLineTTSContext(ctx context.Context, cfg *config.Config, text, lang, role string) ([]byte, error) {
 	speed := cfg.TTSSpeed
 	if speed <= 0 {
@@ -42,20 +43,37 @@ func RenderSingleLineTTSContext(ctx context.Context, cfg *config.Config, text, l
 		text = textutil.NormalizeVietnameseTextReplaceNumbers(text)
 	}
 
+	if grpcAddr := ResolveGrpcAddr(cfg); grpcAddr != "" && !isGRPCUnavailable(grpcAddr) {
+		wav, err := renderSingleLineTTSGRPC(ctx, grpcAddr, cfg.ApiToken, text, lang, role, speed)
+		if err == nil {
+			return wav, nil
+		}
+		if !shouldFallbackToHTTP(ctx, err) || strings.TrimSpace(cfg.ApiUrl) == "" {
+			return nil, err
+		}
+		markGRPCUnavailable(grpcAddr)
+	}
+
+	return renderSingleLineTTSHTTP(ctx, cfg, text, lang, role, speed)
+}
+
+func renderSingleLineTTSHTTP(ctx context.Context, cfg *config.Config, text, lang, role string, speed float64) ([]byte, error) {
 	payload := TTSRequest{Text: text, Lang: lang, Role: role, Speed: speed}
 	jsonBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/v1/audio/speech", cfg.ApiUrl)
+	url := fmt.Sprintf("%s/v1/audio/speech", strings.TrimRight(cfg.ApiUrl, "/"))
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.ApiToken)
+	if cfg.ApiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.ApiToken)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -72,13 +90,31 @@ func RenderSingleLineTTSContext(ctx context.Context, cfg *config.Config, text, l
 	return io.ReadAll(resp.Body)
 }
 
-// SyncSubtitleWithServer posts subtitle and reference audio track to Subsync API endpoint.
+// SyncSubtitleWithServer posts subtitle and reference audio/subtitle track to Subsync API endpoint.
 func SyncSubtitleWithServer(cfg *config.Config, targetSubPath, refAudioPath, outputSubPath string) error {
 	return SyncSubtitleWithServerContext(context.Background(), cfg, targetSubPath, refAudioPath, outputSubPath)
 }
 
-// SyncSubtitleWithServerContext posts subtitle and reference audio track with context cancellation.
+// SyncSubtitleWithServerContext syncs a target subtitle against a reference audio or subtitle track.
+// It prefers gRPC streaming when available and automatically falls back to HTTP multipart upload.
 func SyncSubtitleWithServerContext(ctx context.Context, cfg *config.Config, targetSubPath, refAudioPath, outputSubPath string) error {
+	protoRefType, httpRefType := detectRefType(refAudioPath)
+
+	if grpcAddr := ResolveGrpcAddr(cfg); grpcAddr != "" && !isGRPCUnavailable(grpcAddr) {
+		err := syncSubtitleGRPC(ctx, grpcAddr, cfg.ApiToken, targetSubPath, refAudioPath, outputSubPath, protoRefType)
+		if err == nil {
+			return nil
+		}
+		if !shouldFallbackToHTTP(ctx, err) || strings.TrimSpace(cfg.ApiUrl) == "" {
+			return err
+		}
+		markGRPCUnavailable(grpcAddr)
+	}
+
+	return syncSubtitleHTTP(ctx, cfg, targetSubPath, refAudioPath, outputSubPath, httpRefType)
+}
+
+func syncSubtitleHTTP(ctx context.Context, cfg *config.Config, targetSubPath, refAudioPath, outputSubPath, refType string) error {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -94,7 +130,7 @@ func SyncSubtitleWithServerContext(ctx context.Context, cfg *config.Config, targ
 	}
 	_, _ = io.Copy(partSub, subFile)
 
-	// 2. Reference audio stream payload
+	// 2. Reference audio/subtitle stream payload
 	audioFile, err := os.Open(refAudioPath)
 	if err != nil {
 		return err
@@ -107,17 +143,19 @@ func SyncSubtitleWithServerContext(ctx context.Context, cfg *config.Config, targ
 	_, _ = io.Copy(partAudio, audioFile)
 
 	// 3. Set reference type
-	_ = writer.WriteField("ref_type", "audio")
+	_ = writer.WriteField("ref_type", refType)
 	_ = writer.Close()
 
-	url := fmt.Sprintf("%s/v1/utils/subsync", cfg.ApiUrl)
+	url := fmt.Sprintf("%s/v1/utils/subsync", strings.TrimRight(cfg.ApiUrl, "/"))
 	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
 	if err != nil {
 		return err
 	}
 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+cfg.ApiToken)
+	if cfg.ApiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.ApiToken)
+	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
@@ -205,8 +243,41 @@ func CheckServerHealth(cfg *config.Config) error {
 	return CheckServerHealthContext(context.Background(), cfg)
 }
 
-// CheckServerHealthContext checks if the TTS server is reachable and healthy with context.
+// CheckServerHealthContext checks if the TTS server is reachable and healthy via gRPC or HTTP.
 func CheckServerHealthContext(ctx context.Context, cfg *config.Config) error {
+	_, _, err := CheckServerHealthWithTransportContext(ctx, cfg)
+	return err
+}
+
+// CheckServerHealthWithTransportContext probes gRPC first (if enabled/derivable) and falls back to HTTP.
+// Returns the active transport ("grpc" or "http"), the endpoint checked, and any error if both failed.
+func CheckServerHealthWithTransportContext(ctx context.Context, cfg *config.Config) (string, string, error) {
+	var grpcErr error
+	grpcAddr := ResolveGrpcAddr(cfg)
+	if grpcAddr != "" {
+		if err := CheckGRPCHealthContext(ctx, grpcAddr); err == nil {
+			return "grpc", grpcAddr, nil
+		} else {
+			grpcErr = err
+			markGRPCUnavailable(grpcAddr)
+		}
+	}
+
+	if strings.TrimSpace(cfg.ApiUrl) != "" {
+		if err := checkHTTPHealthContext(ctx, cfg); err == nil {
+			return "http", cfg.ApiUrl, nil
+		} else {
+			return "", cfg.ApiUrl, err
+		}
+	}
+
+	if grpcErr != nil {
+		return "", grpcAddr, fmt.Errorf("cannot connect to TTS gRPC server (%s): %w", grpcAddr, grpcErr)
+	}
+	return "", "", fmt.Errorf("no TTS server URL configured")
+}
+
+func checkHTTPHealthContext(ctx context.Context, cfg *config.Config) error {
 	client := &http.Client{Timeout: 3 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(cfg.ApiUrl, "/")+"/health", nil)
 	if err != nil {

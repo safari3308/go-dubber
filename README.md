@@ -22,16 +22,18 @@
   - Automatically detects unfinished work on startup so you never re-copy multi-GB NAS files or lose rendered TTS audio chunks.
   - Includes a **Reuse Chunks** toggle in the UI to reuse or discard cached `chunk_XXXX.wav` files before running.
 - **Live-Mutable Queue & Lifecycle Controls**:
-  - **Start / Pause / Stop** processing cleanly at any time.
+  - **Start / Pause / Stop**, **Start Single Item**, **Clear Completed**, and smart **Start All** (upgrades a single-item run to process all remaining pending items while skipping completed tasks).
   - Add files/folders (via Server File Browser or cross-platform **Quick Paste Path** supporting macOS Finder *"Copy as Pathname"* & Windows Explorer *"Copy as path"*), reorder, edit per-item configs, or remove/cancel items **while the queue is running**.
-- **Dual-Subtitle Pipeline (TTS vs. Embedded ASS)**:
+- **Dual-Subtitle Pipeline (TTS vs. Embedded ASS) & Google AI (Gemini)**:
   - Separate **TTS Subtitle** (e.g., clean `.srt`) and **Embed Subtitle** (e.g., `.ass` preserving styles, signs, and descriptions in MKV containers).
-  - **1-Click Extract Embedded Subtitles** (Download `.ass`/`.srt` or Copy to Clipboard for translating/cleaning with Gemini or other LLMs).
+  - Optional **Google AI (`gemini-flash-latest`)** subtitle translation & cleanup — supports native `.ass` dual-output (translates and tags signs/music/descriptions so local Go filters them out of TTS while keeping the full styled `.ass` embedded in the video), plus Standard and Donghua/Xianxia (Hán Việt) presets.
+  - **1-Click Extract Embedded Subtitles** (Download `.ass`/`.srt` or Copy to Clipboard).
   - **Upload or Drag & Drop** external subtitles directly onto any queue item with language (`EN`/`VI`) and role (`TTS + Embed`, `TTS Only`, `Embed Only`) selection.
 - **Audio Track Controls**:
   - Lists all embedded audio tracks per video, lets you select the **Source (Origin) Audio** track, supports **silent screen recordings** (0 audio tracks → TTS added as Track #0), leaves existing audio languages unchecked by default, and lets you **Add a new track** or **Replace a faulty track**.
-- **Automatic TTS Health Monitor + In-Browser English Fallback**:
-  - Continuously monitors the remote TTS backend (`GET /health`).
+- **gRPC + Automatic HTTP Fallback & In-Browser English Fallback**:
+  - Prefers **gRPC** (`tts.v1.TTSService` on `<host>:50051` by default, configurable via `grpc_url`) for lower-latency synthesis and client-streaming subtitle sync, and **automatically falls back to HTTP** if gRPC is unavailable.
+  - Continuously monitors the TTS backend (`grpc.health.v1.Health/Check` → `GET /health`) and displays the active transport (`gRPC` or `HTTP`) in the header.
   - Includes an optional **In-Browser `kokoro-js` (WebGPU / WASM)** Web Worker so you can dub **English (`en`)** directly in your browser tab even when no remote TTS backend is running.
 
 ---
@@ -47,7 +49,8 @@ Go Server (cmd/go-dubber)
     ├── Queue Manager         → Live add/remove/reorder, Start/Pause/Stop, workdir/queue.json
     ├── Workspace & Recovery  → Persistent workdir/jobs/<id>/, local copy & chunk cache
     ├── Dual-Sub Resolver     → Separate TTS (.srt) vs Embed (.ass) + 1-click extraction
-    ├── TTS Health Monitor    → Polls remote tts-service + In-Browser KokoroJS EN fallback
+    ├── TTS Client & Monitor  → gRPC primary (auto-fallback to HTTP) + Browser KokoroJS EN
+    ├── Gemini Sub Processor  → Optional .srt/.ass translation & sign/song filtering
     └── FFmpeg 2-Pass Engine  → Audio mix/replace + GPU/CPU encode or stream copy
 ```
 
@@ -94,7 +97,21 @@ cd web && npm install && npm run dev
 
 ## TTS Backend API Specification
 
-The default backend is **[safari3308/tts-service](https://github.com/safari3308/tts-service)**. If you want to build your own compatible backend (e.g., wrapping Kokoro, Piper, F5-TTS, Edge-TTS, XTTS, or OpenAI TTS), implement the following HTTP endpoints:
+The default backend is **[safari3308/tts-service](https://github.com/safari3308/tts-service)**, which exposes both **gRPC** (port `50051`) and **HTTP** (port `8000`). Go-Dubber tries gRPC first and automatically falls back to HTTP if gRPC is unavailable (or if `grpc_url` is set to `"disabled"`).
+
+### gRPC Transport (Preferred)
+
+Defined in [`proto/tts/v1/tts.proto`](proto/tts/v1/tts.proto):
+
+- **Address**: Defaults to `<api_url host>:50051` when `grpc_url` is empty; override with `host:port` or set `"disabled"` for HTTP-only.
+- **Auth**: gRPC metadata `authorization: Bearer <api_token>` (health check is public).
+- **Health Check**: Standard `grpc.health.v1.Health/Check` (`service: ""`, expects `SERVING`).
+- **Synthesis**: `tts.v1.TTSService/Synthesize` (`text`, `lang`, `role`, `speed` → 24 kHz 16-bit mono PCM WAV).
+- **Subtitle Sync**: `tts.v1.TTSService/SyncSubtitleStream` (client-streaming metadata `REFERENCE_TYPE_SUB` / `REFERENCE_TYPE_AUDIO`, target SRT chunks, and reference file chunks → `synced_srt`).
+
+### HTTP Transport (Fallback / Custom Backends)
+
+If you want to build your own HTTP-only compatible backend (e.g., wrapping Kokoro, Piper, F5-TTS, Edge-TTS, XTTS, or OpenAI TTS), implement the following HTTP endpoints:
 
 ### Authentication
 All requests include:
@@ -159,7 +176,7 @@ Used when `skip_sub_sync` is `false` and an external subtitle is being synced ag
   | --- | --- | --- |
   | `target_sub` | `file` | External `.srt` subtitle file to synchronize |
   | `reference_file` | `file` | Reference `.srt` (sub-to-sub sync) or 16 kHz mono `.aac` anchor audio (audio sync) |
-  | `ref_type` | `string` | Reference mode (`"audio"`) |
+  | `ref_type` | `string` | Reference mode (`"sub"` for subtitle references, `"audio"` for audio references) |
 - **Success Response**: `200 OK`
   - **Body**: Synchronized `.srt` subtitle text (UTF-8).
 
