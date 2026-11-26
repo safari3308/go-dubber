@@ -48,6 +48,10 @@ type ItemConfig struct {
 	AITrackAsFirstTrack bool                       `json:"ai_track_as_first_track"`
 	DropSongSubtitles   bool                       `json:"drop_song_subtitles"`
 	VolumeBoost         string                     `json:"volume_boost"`
+	UseGemini           bool                       `json:"use_gemini,omitempty"`
+	GeminiCleanForTTS   bool                       `json:"gemini_clean_for_tts,omitempty"`
+	GeminiTranslate     bool                       `json:"gemini_translate,omitempty"`
+	GeminiStyle         string                     `json:"gemini_style,omitempty"` // "standard" or "donghua"
 	LanguageSpecs       []subtitle.LanguageDubSpec `json:"language_specs,omitempty"`
 }
 
@@ -56,6 +60,10 @@ func ItemConfigFromGlobal(cfg *config.Config) ItemConfig {
 	langs := append([]string(nil), cfg.DubLanguages...)
 	if len(langs) == 0 {
 		langs = []string{"vi"}
+	}
+	style := cfg.GeminiStyle
+	if style == "" {
+		style = "standard"
 	}
 	return ItemConfig{
 		DubLanguages:        langs,
@@ -70,6 +78,10 @@ func ItemConfigFromGlobal(cfg *config.Config) ItemConfig {
 		AITrackAsFirstTrack: cfg.AITrackAsFirstTrack,
 		DropSongSubtitles:   cfg.DropSongSubtitles,
 		VolumeBoost:         cfg.FFmpeg.VolumeBoost,
+		UseGemini:           cfg.GeminiEnabled,
+		GeminiCleanForTTS:   cfg.GeminiCleanForTTS,
+		GeminiTranslate:     cfg.GeminiTranslate,
+		GeminiStyle:         style,
 	}
 }
 

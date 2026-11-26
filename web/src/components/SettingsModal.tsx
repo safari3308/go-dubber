@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Cpu, Database, Loader2, Save, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Cpu, Database, Loader2, Save, Sparkles, X } from 'lucide-react';
 import type { GlobalConfig, HardwareProfile } from '../types/api';
 
 interface SettingsModalProps {
@@ -176,6 +176,86 @@ export function SettingsModal({
                   className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
+            </div>
+
+            {/* Google AI (Gemini) Toggleable Subtitle Integration */}
+            <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-violet-300">
+                  <Sparkles className="h-4 w-4" />
+                  Google AI (Gemini) Subtitle Processing
+                </div>
+                <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                  <span>{draft.gemini_enabled ? 'Enabled' : 'Disabled'}</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(draft.gemini_enabled)}
+                    onChange={(e) => setDraft({ ...draft, gemini_enabled: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-violet-500"
+                  />
+                </label>
+              </div>
+
+              {draft.gemini_enabled && (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300">
+                      Google AI API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={draft.gemini_api_key || ''}
+                      onChange={(e) => setDraft({ ...draft, gemini_api_key: e.target.value })}
+                      placeholder="AIza..."
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-300">
+                      Default Translation / Cleanup Style
+                    </label>
+                    <select
+                      value={draft.gemini_style || 'standard'}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          gemini_style: e.target.value as 'standard' | 'donghua',
+                        })
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
+                    >
+                      <option value="standard">Standard (Modern / Conversational)</option>
+                      <option value="donghua">
+                        Donghua / Xianxia (Classical Hán Việt, strips TN/credits/signs)
+                      </option>
+                    </select>
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={draft.gemini_clean_for_tts ?? true}
+                        onChange={(e) =>
+                          setDraft({ ...draft, gemini_clean_for_tts: e.target.checked })
+                        }
+                        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-violet-500"
+                      />
+                      <span>Filter signs/descriptions for TTS</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(draft.gemini_translate)}
+                        onChange={(e) =>
+                          setDraft({ ...draft, gemini_translate: e.target.checked })
+                        }
+                        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-violet-500"
+                      />
+                      <span>Translate dialogue to target language</span>
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Hardware Detection Card */}

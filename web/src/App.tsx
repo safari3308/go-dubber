@@ -555,8 +555,10 @@ export default function App() {
 
       <ItemConfigModal
         job={editingJob}
+        geminiReady={Boolean(settings?.gemini_enabled && settings?.gemini_api_key)}
         onClose={() => setEditingJob(null)}
         onSave={handleSaveItemConfig}
+        onJobUpdated={refreshQueue}
       />
 
       <SettingsModal

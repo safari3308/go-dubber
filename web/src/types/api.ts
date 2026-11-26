@@ -37,6 +37,11 @@ export interface GlobalConfig {
   ai_track_as_first_track: boolean;
   drop_song_subtitles: boolean;
   reuse_audio_chunks?: boolean;
+  gemini_enabled?: boolean;
+  gemini_api_key?: string;
+  gemini_clean_for_tts?: boolean;
+  gemini_translate?: boolean;
+  gemini_style?: 'standard' | 'donghua';
 }
 
 export interface HardwareProfile {
@@ -136,6 +141,10 @@ export interface ItemConfig {
   ai_track_as_first_track: boolean;
   drop_song_subtitles: boolean;
   volume_boost: string;
+  use_gemini?: boolean;
+  gemini_clean_for_tts?: boolean;
+  gemini_translate?: boolean;
+  gemini_style?: 'standard' | 'donghua';
   language_specs?: LanguageDubSpec[];
 }
 

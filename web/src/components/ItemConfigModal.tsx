@@ -8,6 +8,7 @@ import {
   Loader2,
   Mic,
   Save,
+  Sparkles,
   Subtitles,
   Volume2,
   X,
@@ -25,8 +26,10 @@ import type {
 
 interface ItemConfigModalProps {
   job: JobItem | null;
+  geminiReady?: boolean;
   onClose: () => void;
   onSave: (jobId: string, cfg: ItemConfig) => Promise<void>;
+  onJobUpdated?: () => Promise<void>;
 }
 
 const SUPPORTED_LANGS: { code: 'en' | 'vi'; label: string }[] = [
@@ -34,7 +37,13 @@ const SUPPORTED_LANGS: { code: 'en' | 'vi'; label: string }[] = [
   { code: 'vi', label: 'Vietnamese (VI)' },
 ];
 
-export function ItemConfigModal({ job, onClose, onSave }: ItemConfigModalProps) {
+export function ItemConfigModal({
+  job,
+  geminiReady,
+  onClose,
+  onSave,
+  onJobUpdated,
+}: ItemConfigModalProps) {
   const [cfg, setCfg] = useState<ItemConfig | null>(null);
   const [audioStreams, setAudioStreams] = useState<AudioStreamDetails[]>([]);
   const [embeddedSubs, setEmbeddedSubs] = useState<EmbeddedSubInfo[]>([]);
@@ -182,6 +191,28 @@ export function ItemConfigModal({ job, onClose, onSave }: ItemConfigModalProps) 
     }
   };
 
+  const handleGeminiProcessTrack = async (subIndex: number, targetLang: 'en' | 'vi') => {
+    const key = `gemini-${subIndex}-${targetLang}`;
+    setExtractingKey(key);
+    setError('');
+    try {
+      const res = await api.processGeminiSubtitle(job.id, {
+        source_type: 'embedded',
+        embedded_index: subIndex,
+        target_lang: targetLang,
+        translate: true,
+        clean_for_tts: true,
+        style: cfg.gemini_style || 'standard',
+      });
+      setCfg(structuredClone(res.job.config));
+      if (onJobUpdated) await onJobUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google AI processing failed');
+    } finally {
+      setExtractingKey(null);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
@@ -316,6 +347,9 @@ export function ItemConfigModal({ job, onClose, onSave }: ItemConfigModalProps) 
               { key: 'force_reprocess', label: 'Force Reprocess' },
               { key: 'ai_track_as_first_track', label: 'AI Audio as Track #0' },
               { key: 'drop_song_subtitles', label: 'Drop Song/Karaoke Subs' },
+              { key: 'use_gemini', label: 'Use Google AI (Gemini)' },
+              { key: 'gemini_clean_for_tts', label: 'AI: Clean Descriptions' },
+              { key: 'gemini_translate', label: 'AI: Translate Dialogue' },
             ].map(({ key, label }) => (
               <label
                 key={key}
@@ -331,6 +365,26 @@ export function ItemConfigModal({ job, onClose, onSave }: ItemConfigModalProps) 
               </label>
             ))}
           </div>
+
+          {/* Per-Video Google AI Translation Style */}
+          {(cfg.use_gemini || geminiReady) && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-500/20 bg-violet-500/5 px-4 py-2.5">
+              <div className="flex items-center gap-2 text-xs font-medium text-violet-200">
+                <Sparkles className="h-3.5 w-3.5 text-violet-400" />
+                <span>Google AI Subtitle Style</span>
+              </div>
+              <select
+                value={cfg.gemini_style || 'standard'}
+                onChange={(e) =>
+                  setCfg({ ...cfg, gemini_style: e.target.value as 'standard' | 'donghua' })
+                }
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-100 focus:border-violet-500 focus:outline-none"
+              >
+                <option value="standard">Standard (Modern / Normal Videos)</option>
+                <option value="donghua">Donghua / Xianxia (Hán Việt for TTS)</option>
+              </select>
+            </div>
+          )}
 
           {/* Available Audio Tracks & Source (Origin) Audio Selector */}
           <div className="space-y-2.5 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -507,6 +561,39 @@ export function ItemConfigModal({ job, onClose, onSave }: ItemConfigModalProps) 
                             )}
                             .SRT
                           </button>
+                        )}
+
+                        {geminiReady && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={extractingKey !== null}
+                              onClick={() => void handleGeminiProcessTrack(sub.sub_index, 'vi')}
+                              title="Translate & clean for TTS into Vietnamese using Google AI, and attach as TTS subtitle"
+                              className="inline-flex items-center gap-1 rounded-md bg-violet-600/25 px-2.5 py-1 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40 hover:bg-violet-600/40 disabled:opacity-40"
+                            >
+                              {extractingKey === `gemini-${sub.sub_index}-vi` ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3 w-3 text-violet-300" />
+                              )}
+                              AI → VI
+                            </button>
+                            <button
+                              type="button"
+                              disabled={extractingKey !== null}
+                              onClick={() => void handleGeminiProcessTrack(sub.sub_index, 'en')}
+                              title="Translate & clean for TTS into English using Google AI, and attach as TTS subtitle"
+                              className="inline-flex items-center gap-1 rounded-md bg-violet-600/25 px-2.5 py-1 text-[11px] font-medium text-violet-200 ring-1 ring-violet-500/40 hover:bg-violet-600/40 disabled:opacity-40"
+                            >
+                              {extractingKey === `gemini-${sub.sub_index}-en` ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3 w-3 text-violet-300" />
+                              )}
+                              AI → EN
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>

@@ -75,6 +75,25 @@ export const api = {
     }
     return res.json() as Promise<JobItem>;
   },
+  processGeminiSubtitle: (
+    jobId: string,
+    payload: {
+      source_type: 'embedded' | 'external';
+      embedded_index?: number;
+      external_path?: string;
+      target_lang: 'en' | 'vi';
+      translate: boolean;
+      clean_for_tts: boolean;
+      style?: 'standard' | 'donghua';
+    }
+  ) =>
+    request<{ job: JobItem; total_cues: number; kept_cues: number; path: string }>(
+      `/api/queue/items/${encodeURIComponent(jobId)}/gemini-subtitle`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    ),
 
   getQueue: () => request<QueueSnapshot>('/api/queue'),
   addQueueItems: (paths: string[], config?: Partial<ItemConfig>) =>

@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/safari3308/go-dubber/internal/config"
+	"github.com/safari3308/go-dubber/internal/gemini"
 	"github.com/safari3308/go-dubber/internal/hardware"
 	"github.com/safari3308/go-dubber/internal/media"
 	"github.com/safari3308/go-dubber/internal/queue"
@@ -103,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/queue/items", s.handleAddQueueItems)
 	mux.HandleFunc("PATCH /api/queue/items/{id}", s.handleUpdateQueueItem)
 	mux.HandleFunc("POST /api/queue/items/{id}/subtitles", s.handleUploadQueueSubtitle)
+	mux.HandleFunc("POST /api/queue/items/{id}/gemini-subtitle", s.handleGeminiQueueSubtitle)
 	mux.HandleFunc("DELETE /api/queue/items/{id}", s.handleDeleteQueueItem)
 	mux.HandleFunc("POST /api/queue/reorder", s.handleReorderQueue)
 	mux.HandleFunc("POST /api/queue/start", s.handleQueueStart)
@@ -486,6 +488,121 @@ func (s *Server) handleUploadQueueSubtitle(w http.ResponseWriter, r *http.Reques
 	}
 	s.broker.Notify("success", "Subtitle Attached", fmt.Sprintf("Attached %s (%s) to %s", safeName, strings.ToUpper(lang), updated.FileName))
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleGeminiQueueSubtitle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cfg := s.GetConfig()
+	if !cfg.GeminiEnabled {
+		writeError(w, http.StatusBadRequest, "Google AI (Gemini) is disabled in Settings")
+		return
+	}
+	if strings.TrimSpace(cfg.GeminiAPIKey) == "" {
+		writeError(w, http.StatusBadRequest, "Gemini API key is not configured in Settings")
+		return
+	}
+
+	var req struct {
+		SourceType    string `json:"source_type"`    // "embedded" or "external"
+		EmbeddedIndex int    `json:"embedded_index"` // when source_type == "embedded"
+		ExternalPath  string `json:"external_path"`  // when source_type == "external"
+		TargetLang    string `json:"target_lang"`    // "en" or "vi"
+		Translate     bool   `json:"translate"`
+		CleanForTTS   bool   `json:"clean_for_tts"`
+		Style         string `json:"style"` // "standard" or "donghua"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON payload: "+err.Error())
+		return
+	}
+
+	lang := strings.ToLower(strings.TrimSpace(req.TargetLang))
+	if lang != "en" && lang != "vi" {
+		writeError(w, http.StatusBadRequest, "target_lang must be 'en' or 'vi'")
+		return
+	}
+	if !req.Translate && !req.CleanForTTS {
+		req.CleanForTTS = true
+	}
+
+	snap := s.queue.Snapshot()
+	var targetJob *queue.JobItem
+	for i := range snap.Items {
+		if snap.Items[i].ID == id {
+			targetJob = &snap.Items[i]
+			break
+		}
+	}
+	if targetJob == nil {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	if err := s.ws.EnsureJobDirs(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	subsDir := s.ws.SubsDir(id)
+	rawSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_src_%s.srt", lang))
+	if req.SourceType == "embedded" {
+		if err := media.ExtractEmbeddedSubtitleContext(r.Context(), targetJob.SourcePath, rawSrt, req.EmbeddedIndex); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		extPath := textutil.SanitizePath(req.ExternalPath)
+		if extPath == "" {
+			writeError(w, http.StatusBadRequest, "external_path is required")
+			return
+		}
+		if strings.ToLower(filepath.Ext(extPath)) == ".srt" {
+			if err := textutil.CopyFileContext(r.Context(), extPath, rawSrt, nil); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else {
+			if err := media.ConvertToSRTContext(r.Context(), extPath, rawSrt); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+	}
+
+	outSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.srt", lang))
+	style := strings.TrimSpace(req.Style)
+	if style == "" {
+		style = targetJob.Config.GeminiStyle
+	}
+	if style == "" {
+		style = cfg.GeminiStyle
+	}
+	gClient := gemini.NewClient(cfg.GeminiAPIKey)
+	totalCues, keptCues, err := gClient.ProcessSRTFile(r.Context(), rawSrt, outSrt, gemini.ProcessOptions{
+		TargetLang:  lang,
+		Translate:   req.Translate,
+		CleanForTTS: req.CleanForTTS,
+		Style:       style,
+	}, nil)
+	_ = os.Remove(rawSrt)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	updated, err := s.queue.AttachUploadedSubtitle(id, lang, "tts", outSrt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	s.broker.Notify("success", "Google AI Subtitle Ready", fmt.Sprintf("Processed %d -> %d cues (%s) and attached as TTS subtitle.", totalCues, keptCues, strings.ToUpper(lang)))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"job":        updated,
+		"total_cues": totalCues,
+		"kept_cues":  keptCues,
+		"path":       outSrt,
+	})
 }
 
 func (s *Server) handleGetQueue(w http.ResponseWriter, r *http.Request) {

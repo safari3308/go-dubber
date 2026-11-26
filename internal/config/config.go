@@ -48,6 +48,11 @@ type Config struct {
 	AITrackAsFirstTrack bool         `json:"ai_track_as_first_track"`
 	DropSongSubtitles   bool         `json:"drop_song_subtitles"`
 	ReuseAudioChunks    bool         `json:"reuse_audio_chunks,omitempty"`
+	GeminiEnabled       bool         `json:"gemini_enabled,omitempty"`
+	GeminiAPIKey        string       `json:"gemini_api_key,omitempty"`
+	GeminiCleanForTTS   bool         `json:"gemini_clean_for_tts,omitempty"`
+	GeminiTranslate     bool         `json:"gemini_translate,omitempty"`
+	GeminiStyle         string       `json:"gemini_style,omitempty"` // "standard" or "donghua"
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -63,6 +68,8 @@ func DefaultConfig() *Config {
 		TTSSpeed:           1.1,
 		DropSongSubtitles:  true,
 		ReuseAudioChunks:   true,
+		GeminiCleanForTTS:  true,
+		GeminiStyle:        "standard",
 	}
 }
 

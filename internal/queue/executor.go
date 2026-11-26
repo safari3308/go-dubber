@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/safari3308/go-dubber/internal/config"
+	"github.com/safari3308/go-dubber/internal/gemini"
 	"github.com/safari3308/go-dubber/internal/hardware"
 	"github.com/safari3308/go-dubber/internal/media"
 	"github.com/safari3308/go-dubber/internal/progress"
@@ -138,6 +139,12 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			specs = append(specs, sp)
 		} else if resolved := subtitle.ResolveDualSubtitle(job.SourcePath, videoInfo.EmbeddedSubStreams, &effCfg, normLang); resolved != nil {
 			specs = append(specs, *resolved)
+		} else if job.Config.UseGemini && job.Config.GeminiTranslate && strings.TrimSpace(effCfg.GeminiAPIKey) != "" {
+			// Fallback: no subtitle in target lang, so pick the best available source subtitle to auto-translate with Gemini
+			if fallbackSpec := pickFallbackSubForGeminiTranslation(job.SourcePath, videoInfo.EmbeddedSubStreams, &effCfg, normLang); fallbackSpec != nil {
+				logInfo(fmt.Sprintf("[%s] No native '%s' subtitle found — using %s for Google AI auto-translation.", normLang, normLang, fallbackSpec.TTSSub.Description))
+				specs = append(specs, *fallbackSpec)
+			}
 		}
 	}
 
@@ -246,7 +253,49 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			}
 		}
 
-		// 4c. Determine Embed subtitle (may be a separate .ass file for styled descriptions!)
+		// 4c. Optional Google AI (Gemini) subtitle cleanup / translation for TTS
+		if job.Config.UseGemini && (job.Config.GeminiCleanForTTS || job.Config.GeminiTranslate) {
+			if strings.TrimSpace(effCfg.GeminiAPIKey) == "" {
+				logWarn(fmt.Sprintf("[%s] Gemini AI is enabled for this item, but no Gemini API key is configured in Settings — skipping AI subtitle pass.", lang))
+			} else {
+				geminiSrt := filepath.Join(subsDir, fmt.Sprintf("gemini_%s.srt", lang))
+				if textutil.FileExists(geminiSrt) {
+					ttsSrtPath = geminiSrt
+					logInfo(fmt.Sprintf("[%s] Reusing cached Gemini-processed subtitle.", lang))
+				} else {
+					state.Stage = "gemini_sub"
+					_ = ws.SaveState(state)
+					logInfo(fmt.Sprintf("[%s] Processing subtitle with Google AI (clean=%v, translate=%v)...", lang, job.Config.GeminiCleanForTTS, job.Config.GeminiTranslate))
+					mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", basePct+langSpan*0.08, fmt.Sprintf("[%s] Processing subtitle with Google AI...", lang))
+
+					gClient := gemini.NewClient(effCfg.GeminiAPIKey)
+					style := job.Config.GeminiStyle
+					if style == "" {
+						style = effCfg.GeminiStyle
+					}
+					totalCues, keptCues, gErr := gClient.ProcessSRTFile(ctx, ttsSrtPath, geminiSrt, gemini.ProcessOptions{
+						TargetLang:  lang,
+						Translate:   job.Config.GeminiTranslate,
+						CleanForTTS: job.Config.GeminiCleanForTTS,
+						Style:       style,
+					}, func(done, total int) {
+						pct := basePct + langSpan*(0.08+0.04*(float64(done)/float64(max(total, 1))))
+						mgr.UpdateJobProgress(job.ID, JobSyncing, "gemini_sub", pct, fmt.Sprintf("[%s] Google AI subtitle [%d/%d]...", lang, done, total))
+					})
+					if gErr != nil {
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
+						logWarn(fmt.Sprintf("[%s] Google AI subtitle processing failed (%v), continuing with original SRT.", lang, gErr))
+					} else if keptCues > 0 {
+						ttsSrtPath = geminiSrt
+						logInfo(fmt.Sprintf("[%s] Google AI processed subtitle (%d -> %d cues kept).", lang, totalCues, keptCues))
+					}
+				}
+			}
+		}
+
+		// 4d. Determine Embed subtitle (may be a separate .ass file for styled descriptions!)
 		embedSubPath := ""
 		isExternalEmbed := false
 		if spec.EmbedSub != nil && spec.EmbedSub.IsValid() && spec.EmbedSub.Type == "external" {
@@ -410,6 +459,61 @@ func prepareTTSSubtitle(ctx context.Context, localVideoPath string, spec subtitl
 		_, _, _ = subtitle.FilterSongAndKaraokeSubtitles(outSrt, outSrt)
 	}
 	return outSrt, nil
+}
+
+// pickFallbackSubForGeminiTranslation selects the best available source subtitle (embedded text sub
+// or external en/zh/ja sub) when a video lacks a native subtitle in targetLang so Gemini can translate it.
+func pickFallbackSubForGeminiTranslation(videoPath string, embeddedSubs []subtitle.EmbeddedSubInfo, cfg *config.Config, targetLang string) *subtitle.LanguageDubSpec {
+	// 1. Prefer an embedded English text subtitle, then any non-bitmap embedded text subtitle
+	var firstText *subtitle.EmbeddedSubInfo
+	for i := range embeddedSubs {
+		sub := &embeddedSubs[i]
+		if sub.IsBitmap {
+			continue
+		}
+		if firstText == nil {
+			firstText = sub
+		}
+		if strings.ToLower(sub.Language) == "en" {
+			firstText = sub
+			break
+		}
+	}
+	if firstText != nil {
+		return &subtitle.LanguageDubSpec{
+			Language: targetLang,
+			TTSSub: subtitle.SubtitleSource{
+				Type:          "embedded",
+				EmbeddedIndex: firstText.SubIndex,
+				Format:        firstText.CodecName,
+				Description:   fmt.Sprintf("Embedded track #%d (%s)", firstText.SubIndex, firstText.Language),
+			},
+			SyncTTSSub: false,
+		}
+	}
+
+	// 2. Fall back to external subtitle in common source languages (en, zh, ja)
+	for _, srcLang := range []string{"en", "zh", "ja"} {
+		if srcLang == targetLang {
+			continue
+		}
+		cands := subtitle.DiscoverExternalSubtitlesForLanguage(videoPath, srcLang, cfg)
+		if len(cands) > 0 {
+			best := cands[0]
+			return &subtitle.LanguageDubSpec{
+				Language: targetLang,
+				TTSSub: subtitle.SubtitleSource{
+					Type:        "external",
+					Path:        best.Path,
+					Format:      best.Format,
+					Description: fmt.Sprintf("External %s: %s", strings.ToUpper(best.Format), best.FileName),
+				},
+				SyncTTSSub: !cfg.SkipSubSync,
+			}
+		}
+	}
+
+	return nil
 }
 
 func syncExternalSubtitle(ctx context.Context, localVideoPath string, info *media.VideoInfo, targetSrt, outSyncedSrt, subsDir string, cfg *config.Config) (bool, error) {
