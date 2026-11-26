@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// DefaultModel is the default Google AI Gemini model used for subtitle translation and TTS cleanup.
-const DefaultModel = "gemini-3.8-flash"
+// DefaultModel is the default Google AI Gemini model alias used for subtitle translation and TTS cleanup.
+const DefaultModel = "gemini-flash-latest"
 
 // Supported subtitle processing / translation styles.
 const (
