@@ -14,6 +14,9 @@ type HealthStatus struct {
 	URL         string    `json:"url"`
 	GrpcURL     string    `json:"grpc_url,omitempty"`
 	Transport   string    `json:"transport,omitempty"` // "grpc" or "http"
+	Engine      string    `json:"engine,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	SampleRate  int       `json:"sample_rate,omitempty"`
 	LatencyMs   int64     `json:"latency_ms"`
 	LastChecked time.Time `json:"last_checked"`
 	Error       string    `json:"error,omitempty"`
@@ -56,16 +59,37 @@ func (m *HealthMonitor) CheckNow(ctx context.Context) HealthStatus {
 	transport, _, err := CheckServerHealthWithTransportContext(ctx, cfg)
 	latency := time.Since(start).Milliseconds()
 
+	grpcURL := ResolveGrpcAddr(cfg)
 	next := HealthStatus{
 		Available:   err == nil,
 		URL:         cfg.ApiUrl,
-		GrpcURL:     ResolveGrpcAddr(cfg),
+		GrpcURL:     grpcURL,
 		Transport:   transport,
 		LatencyMs:   latency,
 		LastChecked: time.Now().UTC(),
 	}
 	if err != nil {
 		next.Error = err.Error()
+	} else {
+		m.mu.RLock()
+		prev := m.status
+		wasInit := m.initialized
+		m.mu.RUnlock()
+
+		needsInfo := !wasInit || !prev.Available || prev.URL != next.URL || prev.GrpcURL != next.GrpcURL || prev.Transport != next.Transport || prev.SampleRate == 0
+		if needsInfo {
+			if info, infoErr := GetServerInfo(ctx, cfg); infoErr == nil && info != nil {
+				next.Engine = info.Engine
+				next.Model = info.Model
+				next.SampleRate = info.SampleRate
+			} else {
+				next.SampleRate = DefaultSampleRate
+			}
+		} else {
+			next.Engine = prev.Engine
+			next.Model = prev.Model
+			next.SampleRate = prev.SampleRate
+		}
 	}
 
 	m.mu.Lock()
@@ -73,7 +97,10 @@ func (m *HealthMonitor) CheckNow(ctx context.Context) HealthStatus {
 		m.status.Available != next.Available ||
 		m.status.URL != next.URL ||
 		m.status.GrpcURL != next.GrpcURL ||
-		m.status.Transport != next.Transport
+		m.status.Transport != next.Transport ||
+		m.status.Engine != next.Engine ||
+		m.status.Model != next.Model ||
+		m.status.SampleRate != next.SampleRate
 	m.status = next
 	m.initialized = true
 	m.mu.Unlock()

@@ -3,7 +3,9 @@ package media
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +27,62 @@ type DubbingPipelineOptions struct {
 	ReuseAudioChunks bool            // When true, reuse existing valid chunk_*.wav files; when false, discard them before synthesis
 	KeepChunks       bool            // When true, keep chunk_*.wav files after packaging (cleaned up only after NAS upload)
 	TTSRenderer      TTSLineRenderer // Optional custom renderer (e.g. in-browser kokoro-js fallback); defaults to tts.RenderSingleLineTTSContext
+}
+
+// ExtractSampleRateFromWAV reads the sample rate (Hz) from WAV header bytes 24..27.
+// Returns 0 if the payload does not start with a valid RIFF/WAVE header or has an out-of-range rate.
+func ExtractSampleRateFromWAV(wavData []byte) int {
+	if len(wavData) < 28 {
+		return 0
+	}
+	if string(wavData[0:4]) != "RIFF" || string(wavData[8:12]) != "WAVE" {
+		return 0
+	}
+	sr := int(binary.LittleEndian.Uint32(wavData[24:28]))
+	if sr < 8000 || sr > 192000 {
+		return 0
+	}
+	return sr
+}
+
+// ResamplePCM16Mono resamples 16-bit signed little-endian mono PCM from srcRate to dstRate
+// using linear interpolation so mixed-rate chunks play at the correct speed and pitch.
+func ResamplePCM16Mono(pcm []byte, srcRate, dstRate int) []byte {
+	if srcRate <= 0 || dstRate <= 0 || srcRate == dstRate || len(pcm) < 4 {
+		return pcm
+	}
+	inSamples := len(pcm) / 2
+	if inSamples < 2 {
+		return pcm
+	}
+	outSamples := int(math.Round(float64(inSamples) * float64(dstRate) / float64(srcRate)))
+	if outSamples < 1 {
+		outSamples = 1
+	}
+
+	out := make([]byte, outSamples*2)
+	ratio := float64(srcRate) / float64(dstRate)
+	for i := 0; i < outSamples; i++ {
+		srcPos := float64(i) * ratio
+		idx0 := int(srcPos)
+		if idx0 >= inSamples-1 {
+			idx0 = inSamples - 1
+			out[i*2] = pcm[idx0*2]
+			out[i*2+1] = pcm[idx0*2+1]
+			continue
+		}
+		frac := srcPos - float64(idx0)
+		s0 := float64(int16(binary.LittleEndian.Uint16(pcm[idx0*2 : idx0*2+2])))
+		s1 := float64(int16(binary.LittleEndian.Uint16(pcm[(idx0+1)*2 : (idx0+1)*2+2])))
+		val := math.Round(s0 + (s1-s0)*frac)
+		if val > 32767 {
+			val = 32767
+		} else if val < -32768 {
+			val = -32768
+		}
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], uint16(int16(val)))
+	}
+	return out
 }
 
 // ExtractPCMFromWAV finds the exact position of the 'data' chunk in WAV (handles any Header length).
@@ -147,7 +205,6 @@ func ProcessDubbingPipelineContext(ctx context.Context, cfg *config.Config, srtP
 	}
 
 	totalEntries := len(entries)
-	sampleRate := 24000
 	bytesPerSample := 2
 	numWorkers := cfg.Workers
 	if numWorkers <= 0 {
@@ -187,9 +244,10 @@ func ProcessDubbingPipelineContext(ctx context.Context, cfg *config.Config, srtP
 					if renderFn == nil {
 						renderFn = tts.RenderSingleLineTTSContext
 					}
-					wavData, err := renderFn(ctx, cfg, job.Entry.Text, lang, "A")
+					voice := cfg.VoiceForLanguage(lang)
+					wavData, err := renderFn(ctx, cfg, job.Entry.Text, lang, voice)
 					if err != nil && ctx.Err() == nil {
-						wavData, err = renderFn(ctx, cfg, job.Entry.Text, lang, "A")
+						wavData, err = renderFn(ctx, cfg, job.Entry.Text, lang, voice)
 					}
 					if ctx.Err() != nil {
 						return
@@ -224,7 +282,31 @@ enqueueLoop:
 		return int(atomic.LoadInt32(&completedCount)), err
 	}
 
-	reporter.Update("packaging", 99, fmt.Sprintf("📦 Packaging WAV payload (%d lines)...", totalEntries))
+	// Determine target canvas sample rate dynamically from synthesized WAV chunks,
+	// falling back to GetServerInfo or DefaultSampleRate (24000 Hz).
+	sampleRate := 0
+	for i := range entries {
+		chunkFile := filepath.Join(chunksDir, fmt.Sprintf("chunk_%04d.wav", i))
+		if f, err := os.Open(chunkFile); err == nil {
+			var hdr [28]byte
+			n, _ := f.Read(hdr[:])
+			_ = f.Close()
+			if sr := ExtractSampleRateFromWAV(hdr[:n]); sr > 0 {
+				sampleRate = sr
+				break
+			}
+		}
+	}
+	if sampleRate == 0 && opts.TTSRenderer == nil {
+		if info, infoErr := tts.GetServerInfo(ctx, cfg); infoErr == nil && info != nil && info.SampleRate > 0 {
+			sampleRate = info.SampleRate
+		}
+	}
+	if sampleRate == 0 {
+		sampleRate = tts.DefaultSampleRate
+	}
+
+	reporter.Update("packaging", 99, fmt.Sprintf("📦 Packaging WAV payload (%d lines @ %d Hz)...", totalEntries, sampleRate))
 
 	// PROTECTION LAYER 2: Fixed Canvas Size (100% match with Video Duration)
 	canvasBytes := make([]byte, int(videoDuration*float64(sampleRate))*bytesPerSample)
@@ -239,6 +321,11 @@ enqueueLoop:
 			continue
 		}
 
+		chunkSR := ExtractSampleRateFromWAV(wavData)
+		if chunkSR == 0 {
+			chunkSR = sampleRate
+		}
+
 		pcmData := ExtractPCMFromWAV(wavData)
 		if len(pcmData) == 0 {
 			continue
@@ -247,6 +334,10 @@ enqueueLoop:
 		pcmData = TrimSilencePCM16(pcmData, 300)
 		if len(pcmData) == 0 {
 			continue
+		}
+
+		if chunkSR != sampleRate {
+			pcmData = ResamplePCM16Mono(pcmData, chunkSR, sampleRate)
 		}
 
 		audioDuration := float64(len(pcmData)) / float64(sampleRate*bytesPerSample)
@@ -267,9 +358,13 @@ enqueueLoop:
 				speedup = 1.5
 			}
 			if speedup >= 1.05 {
-				if respeededWav, err := adjustChunkSpeedContext(ctx, chunkFile, speedup); err == nil {
+				if respeededWav, err := adjustChunkSpeedContext(ctx, chunkFile, speedup, sampleRate); err == nil {
+					respeededSR := ExtractSampleRateFromWAV(respeededWav)
 					respeededPcm := ExtractPCMFromWAV(respeededWav)
 					respeededPcm = TrimSilencePCM16(respeededPcm, 300)
+					if respeededSR > 0 && respeededSR != sampleRate {
+						respeededPcm = ResamplePCM16Mono(respeededPcm, respeededSR, sampleRate)
+					}
 					if len(respeededPcm) > 0 {
 						pcmData = respeededPcm
 					}
@@ -301,12 +396,17 @@ enqueueLoop:
 	return totalEntries, err
 }
 
-func adjustChunkSpeedContext(ctx context.Context, inputWavPath string, speedup float64) ([]byte, error) {
+func adjustChunkSpeedContext(ctx context.Context, inputWavPath string, speedup float64, targetSampleRate int) ([]byte, error) {
 	outWavPath := inputWavPath + ".speed.wav"
 	defer os.Remove(outWavPath)
 
 	filter := fmt.Sprintf("atempo=%.4f", speedup)
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", inputWavPath, "-filter:a", filter, outWavPath)
+	args := []string{"-y", "-i", inputWavPath, "-filter:a", filter}
+	if targetSampleRate > 0 {
+		args = append(args, "-ar", fmt.Sprintf("%d", targetSampleRate), "-ac", "1")
+	}
+	args = append(args, outWavPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	if err := cmd.Run(); err != nil {
 		return nil, err
 	}

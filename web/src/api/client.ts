@@ -8,6 +8,7 @@ import type {
   QueueSnapshot,
   RecoverableJob,
   TTSHealthStatus,
+  TTSVoicesResponse,
 } from '../types/api';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -32,6 +33,10 @@ export const api = {
   getHardware: () => request<HardwareProfile>('/api/system/hardware'),
   getTTSStatus: () => request<TTSHealthStatus>('/api/system/tts-status'),
   checkTTSNow: () => request<TTSHealthStatus>('/api/system/tts-check', { method: 'POST' }),
+  getTTSVoices: (lang?: string) =>
+    request<TTSVoicesResponse>(
+      `/api/system/tts-voices${lang ? `?lang=${encodeURIComponent(lang)}` : ''}`
+    ),
 
   getSettings: () => request<GlobalConfig>('/api/settings'),
   updateSettings: (cfg: GlobalConfig) =>

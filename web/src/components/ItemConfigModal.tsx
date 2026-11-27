@@ -22,6 +22,8 @@ import type {
   JobItem,
   LanguageDubSpec,
   SubtitleSource,
+  TTSVoicesResponse,
+  VoiceInfo,
 } from '../types/api';
 
 interface ItemConfigModalProps {
@@ -48,6 +50,7 @@ export function ItemConfigModal({
   const [audioStreams, setAudioStreams] = useState<AudioStreamDetails[]>([]);
   const [embeddedSubs, setEmbeddedSubs] = useState<EmbeddedSubInfo[]>([]);
   const [extCandidates, setExtCandidates] = useState<Record<string, CandidateSubtitle[]>>({});
+  const [voicesData, setVoicesData] = useState<TTSVoicesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [extractingKey, setExtractingKey] = useState<string | null>(null);
@@ -60,6 +63,7 @@ export function ItemConfigModal({
     setAudioStreams(job.video_info?.audio_streams || []);
     setError('');
     setLoading(true);
+    api.getTTSVoices().then(setVoicesData).catch(() => setVoicesData(null));
     api
       .inspectVideo(job.source_path, ['en', 'vi'])
       .then((res) => {
@@ -640,6 +644,50 @@ export function ItemConfigModal({
                         Auto-sync TTS subtitle
                       </label>
                     </div>
+
+                    {/* TTS Voice Selector for this Language */}
+                    {(() => {
+                      const langVoices: VoiceInfo[] = (voicesData?.voices || []).filter((v) =>
+                        (v.languages || []).includes(lang)
+                      );
+                      const currentVoice = cfg.tts_voices?.[lang] || '';
+                      const serverDefault = voicesData?.default_voices?.[lang];
+                      const currentMissing =
+                        Boolean(currentVoice) &&
+                        langVoices.length > 0 &&
+                        !langVoices.some((v) => v.id === currentVoice);
+                      return (
+                        <div>
+                          <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
+                            <Mic className="h-3.5 w-3.5 text-indigo-400" />
+                            TTS Voice ({lang.toUpperCase()})
+                          </label>
+                          <select
+                            value={currentVoice}
+                            onChange={(e) => {
+                              const nextVoices = { ...(cfg.tts_voices || {}) };
+                              if (e.target.value) nextVoices[lang] = e.target.value;
+                              else delete nextVoices[lang];
+                              setCfg({ ...cfg, tts_voices: nextVoices });
+                            }}
+                            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
+                          >
+                            <option value="">
+                              Default{serverDefault ? ` (${serverDefault})` : ''}
+                            </option>
+                            {currentMissing && (
+                              <option value={currentVoice}>{currentVoice} (configured)</option>
+                            )}
+                            {langVoices.map((v) => (
+                              <option key={v.id} value={v.id}>
+                                {v.name}
+                                {v.description ? ` — ${v.description}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })()}
 
                     {/* Output Audio Track Action: Add New vs Replace Existing Track */}
                     {audioStreams.length > 0 && (

@@ -33,6 +33,7 @@ export interface GlobalConfig {
   skip_encode: boolean;
   only_check_kokoro: boolean;
   tts_speed: number;
+  tts_voices?: Record<string, string>;
   ffmpeg: FFmpegConfig;
   skip_sub_sync: boolean;
   ai_track_as_first_track: boolean;
@@ -60,11 +61,28 @@ export interface HardwareProfile {
   recommended_ffmpeg: FFmpegConfig;
 }
 
+export interface VoiceInfo {
+  id: string;
+  name: string;
+  languages: string[];
+  gender?: string;
+  description?: string;
+}
+
+export interface TTSVoicesResponse {
+  engine?: string;
+  voices: VoiceInfo[];
+  default_voices?: Record<string, string>;
+}
+
 export interface TTSHealthStatus {
   available: boolean;
   url: string;
   grpc_url?: string;
   transport?: 'grpc' | 'http' | '';
+  engine?: string;
+  model?: string;
+  sample_rate?: number;
   latency_ms: number;
   last_checked: string;
   error?: string;
@@ -136,6 +154,7 @@ export interface ItemConfig {
   original_audio_index: number;
   source_audio_index?: number | null;
   tts_speed: number;
+  tts_voices?: Record<string, string>;
   workers: number;
   use_gpu: boolean;
   skip_encode: boolean;

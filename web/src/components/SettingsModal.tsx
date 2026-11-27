@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Cpu, Database, Loader2, Save, Sparkles, X } from 'lucide-react';
-import type { GlobalConfig, HardwareProfile } from '../types/api';
+import { useCallback, useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, Cpu, Database, Loader2, Mic, RefreshCw, Save, Sparkles, X } from 'lucide-react';
+import { api } from '../api/client';
+import type { GlobalConfig, HardwareProfile, TTSVoicesResponse, VoiceInfo } from '../types/api';
 
 interface SettingsModalProps {
   open: boolean;
@@ -26,16 +27,44 @@ export function SettingsModal({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [voicesData, setVoicesData] = useState<TTSVoicesResponse | null>(null);
+  const [loadingVoices, setLoadingVoices] = useState(false);
+
+  const loadVoices = useCallback(async () => {
+    setLoadingVoices(true);
+    try {
+      const res = await api.getTTSVoices();
+      setVoicesData(res);
+    } catch {
+      setVoicesData(null);
+    } finally {
+      setLoadingVoices(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (open && config) {
       setDraft(structuredClone(config));
       setShowAdvanced(false);
       setError('');
+      void loadVoices();
     }
-  }, [open, config]);
+  }, [open, config, loadVoices]);
 
   if (!open || !draft) return null;
+
+  const voicesForLang = (lang: 'en' | 'vi'): VoiceInfo[] =>
+    (voicesData?.voices || []).filter((v) => (v.languages || []).includes(lang));
+
+  const setDefaultVoice = (lang: 'en' | 'vi', voiceId: string) => {
+    const nextVoices = { ...(draft.tts_voices || {}) };
+    if (voiceId) {
+      nextVoices[lang] = voiceId;
+    } else {
+      delete nextVoices[lang];
+    }
+    setDraft({ ...draft, tts_voices: nextVoices });
+  };
 
   const toggleDefaultLang = (code: 'en' | 'vi', checked: boolean) => {
     const set = new Set(draft.dub_languages || []);
@@ -192,6 +221,69 @@ export function SettingsModal({
                   className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
+            </div>
+
+            {/* Default TTS Voices per Language */}
+            <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-indigo-300">
+                  <Mic className="h-4 w-4" />
+                  Default TTS Voices
+                  {voicesData?.engine && (
+                    <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 font-mono text-[10px] font-normal text-indigo-200">
+                      {voicesData.engine}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadVoices()}
+                  disabled={loadingVoices}
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-600 hover:text-white disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${loadingVoices ? 'animate-spin' : ''}`} />
+                  Refresh
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {SUPPORTED_LANGS.map(({ code, label }) => {
+                  const list = voicesForLang(code);
+                  const current = draft.tts_voices?.[code] || '';
+                  const serverDefault = voicesData?.default_voices?.[code];
+                  const currentMissing =
+                    Boolean(current) && list.length > 0 && !list.some((v) => v.id === current);
+                  return (
+                    <div key={code}>
+                      <label className="block text-[11px] font-medium text-slate-300">
+                        {label} Voice
+                      </label>
+                      <select
+                        value={current}
+                        onChange={(e) => setDefaultVoice(code, e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
+                      >
+                        <option value="">
+                          Server Default{serverDefault ? ` (${serverDefault})` : ''}
+                        </option>
+                        {currentMissing && (
+                          <option value={current}>{current} (configured)</option>
+                        )}
+                        {list.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name}
+                            {v.description ? ` — ${v.description}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+              {!loadingVoices && (!voicesData || voicesData.voices.length === 0) && (
+                <p className="mt-2 text-[11px] text-slate-400">
+                  Connect to a running TTS backend and click Refresh to load available voices.
+                </p>
+              )}
             </div>
 
             {/* Google AI (Gemini) Toggleable Subtitle Integration */}

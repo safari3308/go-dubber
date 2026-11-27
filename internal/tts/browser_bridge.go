@@ -79,12 +79,20 @@ func (b *BrowserTTSBridge) IsReady() bool {
 
 // Synthesize sends a single English text line to the browser KokoroJS worker over SSE and awaits the WAV bytes.
 func (b *BrowserTTSBridge) Synthesize(ctx context.Context, text string, speed float64) ([]byte, error) {
+	return b.SynthesizeWithVoice(ctx, text, "", speed)
+}
+
+// SynthesizeWithVoice sends a single English text line with an optional explicit Kokoro voice ID.
+func (b *BrowserTTSBridge) SynthesizeWithVoice(ctx context.Context, text, requestedVoice string, speed float64) ([]byte, error) {
 	b.mu.Lock()
 	if !b.status.Ready {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("browser KokoroJS is not enabled/ready")
 	}
-	voice := b.status.Voice
+	voice := requestedVoice
+	if voice == "" {
+		voice = b.status.Voice
+	}
 	if voice == "" {
 		voice = "af_heart"
 	}

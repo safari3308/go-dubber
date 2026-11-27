@@ -43,8 +43,9 @@ type Config struct {
 	ForceReprocess      bool         `json:"force_reprocess"`
 	SkipEncode          bool         `json:"skip_encode"`
 	OnlyCheckKokoro     bool         `json:"only_check_kokoro"`
-	TTSSpeed            float64      `json:"tts_speed"`
-	FFmpeg              FFmpegConfig `json:"ffmpeg"`
+	TTSSpeed            float64           `json:"tts_speed"`
+	TTSVoices           map[string]string `json:"tts_voices,omitempty"` // default voice ID per language, e.g. {"vi": "Hải Đăng", "en": "af_heart"}
+	FFmpeg              FFmpegConfig      `json:"ffmpeg"`
 	SkipSubSync         bool         `json:"skip_sub_sync"`
 	AITrackAsFirstTrack bool         `json:"ai_track_as_first_track"`
 	DropSongSubtitles   bool         `json:"drop_song_subtitles"`
@@ -105,6 +106,37 @@ func (cfg *Config) Normalize() {
 		}
 	}
 	cfg.DubLanguages = normLangs
+
+	if len(cfg.TTSVoices) > 0 {
+		normVoices := make(map[string]string, len(cfg.TTSVoices))
+		for k, v := range cfg.TTSVoices {
+			langKey := strings.ToLower(strings.TrimSpace(k))
+			voiceVal := strings.TrimSpace(v)
+			if langKey != "" && voiceVal != "" {
+				normVoices[langKey] = voiceVal
+			}
+		}
+		if len(normVoices) > 0 {
+			cfg.TTSVoices = normVoices
+		} else {
+			cfg.TTSVoices = nil
+		}
+	}
+}
+
+// VoiceForLanguage returns the configured default voice ID for lang (or "" if unset).
+func (cfg *Config) VoiceForLanguage(lang string) string {
+	if cfg == nil || len(cfg.TTSVoices) == 0 {
+		return ""
+	}
+	norm := strings.ToLower(strings.TrimSpace(lang))
+	switch norm {
+	case "vi", "vie", "vn", "vietnamese":
+		norm = "vi"
+	case "en", "eng", "english":
+		norm = "en"
+	}
+	return strings.TrimSpace(cfg.TTSVoices[norm])
 }
 
 func LoadConfig(path string) (*Config, error) {

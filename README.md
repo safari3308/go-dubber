@@ -33,7 +33,7 @@
   - Lists all embedded audio tracks per video, lets you select the **Source (Origin) Audio** track, supports **silent screen recordings** (0 audio tracks → TTS added as Track #0), leaves existing audio languages unchecked by default, and lets you **Add a new track** or **Replace a faulty track**.
 - **gRPC + Automatic HTTP Fallback & In-Browser English Fallback**:
   - Prefers **gRPC** (`tts.v1.TTSService` on `<host>:50051` by default, configurable via `grpc_url`) for lower-latency synthesis and client-streaming subtitle sync, and **automatically falls back to HTTP** if gRPC is unavailable.
-  - Continuously monitors the TTS backend (`grpc.health.v1.Health/Check` → `GET /health`) and displays the active transport (`gRPC` or `HTTP`) in the header.
+  - Continuously monitors the TTS backend (`grpc.health.v1.Health/Check` → `GET /health`) and queries `GetInfo` / `GET /v1/info` to display the active transport, engine, model, and sample rate (24 kHz Kokoro or 48 kHz VieNeu-TTS) in the header.
   - Includes an optional **In-Browser `kokoro-js` (WebGPU / WASM)** Web Worker so you can dub **English (`en`)** directly in your browser tab even when no remote TTS backend is running.
 
 ---

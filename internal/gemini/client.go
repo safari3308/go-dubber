@@ -24,6 +24,21 @@ const (
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
+var (
+	emotionTagRe    = regexp.MustCompile(`(?i)\[\s*(cười|cuoi|chuckle|thở dài|tho dai|sigh|hắng giọng|hang giong|clear throat)\s*\]`)
+	multiSpaceRe    = regexp.MustCompile(`\s{2,}`)
+	spaceBeforePunc = regexp.MustCompile(`\s+([.,!?;:…])`)
+)
+
+// StripEmotionTags removes VieNeu inline emotion tags (e.g. [cười], [thở dài], [hắng giọng])
+// for visual subtitles or engines that do not support them.
+func StripEmotionTags(text string) string {
+	cleaned := emotionTagRe.ReplaceAllString(text, " ")
+	cleaned = spaceBeforePunc.ReplaceAllString(cleaned, "$1")
+	cleaned = multiSpaceRe.ReplaceAllString(cleaned, " ")
+	return strings.TrimSpace(cleaned)
+}
+
 // ProcessOptions configures how Gemini processes an SRT subtitle.
 type ProcessOptions struct {
 	TargetLang  string // "en" or "vi"
@@ -310,10 +325,18 @@ func buildPrompt(opts ProcessOptions, prevTail []cuePayload) string {
 				"TTS Flow Optimization:",
 				"- Write complete, natural, flowing Vietnamese sentences that read smoothly aloud.",
 				"- Avoid awkward ellipses (...) at the start or end of split lines that cause robotic TTS pauses; use clean commas or periods instead.",
-				"- Avoid symbols, brackets [], parentheses (), or asterisks * that TTS engines mispronounce.",
+				"- Avoid symbols, parentheses (), asterisks *, or brackets [] EXCEPT the 3 allowed VieNeu emotion tags below.",
 				"- Spell out ambiguous abbreviations for clear pronunciation.",
 			)
 		}
+		rules = append(rules,
+			"",
+			"VieNeu Emotion Tags (use ONLY these 3 exact tags when dialogue genuinely expresses them; do NOT invent other bracketed tags):",
+			"- [cười] for chuckles/laughs (e.g. (laughs), haha, hehe, hì hì)",
+			"- [thở dài] for sighs (e.g. (sighs), haizz)",
+			"- [hắng giọng] for clearing throat (e.g. (clears throat), ahem, khụ khụ)",
+			"- Keep thinking sounds like \"hmm\" / \"hừm\" as plain spoken text (e.g. \"Hừm,\"), NOT in brackets.",
+		)
 	} else {
 		rules = append(rules,
 			"You are a subtitle processor for an AI text-to-speech (TTS) dubbing pipeline.",
@@ -321,10 +344,24 @@ func buildPrompt(opts ProcessOptions, prevTail []cuePayload) string {
 			"Return ONLY a valid JSON array of objects with the exact same \"id\" values and updated \"text\" strings.",
 		)
 		if opts.CleanForTTS {
-			rules = append(rules, "For TTS cleanup: remove on-screen sign translations, title cards, narrator/UI descriptions, sound effects (e.g. [door slams], *sighs*), music lyrics, translator notes, and speaker name prefixes. Keep only spoken dialogue, formatted cleanly for natural speech without awkward ellipses (...) or brackets. If a cue contains ONLY non-spoken descriptions/signs/SFX/credits, set its \"text\" to \"\" (empty string).")
+			if normLang != "en" {
+				rules = append(rules, "For TTS cleanup: remove on-screen sign translations, title cards, narrator/UI descriptions, non-vocal sound effects (e.g. [door slams]), music lyrics, translator notes, and speaker name prefixes. Keep only spoken dialogue, formatted cleanly for natural speech without awkward ellipses (...). If a cue contains ONLY non-spoken descriptions/signs/SFX/credits, set its \"text\" to \"\" (empty string).")
+			} else {
+				rules = append(rules, "For TTS cleanup: remove on-screen sign translations, title cards, narrator/UI descriptions, sound effects (e.g. [door slams], *sighs*), music lyrics, translator notes, and speaker name prefixes. Keep only spoken dialogue, formatted cleanly for natural speech without awkward ellipses (...) or brackets []. If a cue contains ONLY non-spoken descriptions/signs/SFX/credits, set its \"text\" to \"\" (empty string).")
+			}
 		}
 		if opts.Translate {
 			rules = append(rules, fmt.Sprintf("Translate all spoken dialogue naturally and conversationally into %s (keep proper names consistent).", langName))
+		}
+		if normLang != "en" {
+			rules = append(rules,
+				"",
+				"VieNeu Emotion Tags (use ONLY these 3 exact tags when dialogue genuinely expresses them; do NOT invent other bracketed tags):",
+				"- [cười] for chuckles/laughs (e.g. (laughs), haha, hehe, hì hì)",
+				"- [thở dài] for sighs (e.g. (sighs), haizz)",
+				"- [hắng giọng] for clearing throat (e.g. (clears throat), ahem, khụ khụ)",
+				"- Keep thinking sounds like \"hmm\" / \"hừm\" as plain spoken text (e.g. \"Hừm,\"), NOT in brackets.",
+			)
 		}
 	}
 

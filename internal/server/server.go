@@ -78,6 +78,12 @@ func (s *Server) GetConfig() *config.Config {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 	cp := *s.cfg
+	if len(s.cfg.TTSVoices) > 0 {
+		cp.TTSVoices = make(map[string]string, len(s.cfg.TTSVoices))
+		for k, v := range s.cfg.TTSVoices {
+			cp.TTSVoices[k] = v
+		}
+	}
 	return &cp
 }
 
@@ -92,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/system/hardware", s.handleGetHardware)
 	mux.HandleFunc("GET /api/system/tts-status", s.handleGetTTSStatus)
 	mux.HandleFunc("POST /api/system/tts-check", s.handleCheckTTSNow)
+	mux.HandleFunc("GET /api/system/tts-voices", s.handleGetTTSVoices)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 
@@ -154,6 +161,16 @@ func (s *Server) handleCheckTTSNow(w http.ResponseWriter, r *http.Request) {
 	st := s.ttsMon.CheckNow(r.Context())
 	s.broker.Publish("tts_status", st)
 	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGetTTSVoices(w http.ResponseWriter, r *http.Request) {
+	lang := strings.TrimSpace(r.URL.Query().Get("lang"))
+	voices, err := tts.ListVoices(r.Context(), s.GetConfig(), lang)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, voices)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {

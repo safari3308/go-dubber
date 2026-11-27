@@ -40,6 +40,7 @@ type ItemConfig struct {
 	OriginalAudioIndex  int                        `json:"original_audio_index"`
 	SourceAudioIndex    *int                       `json:"source_audio_index,omitempty"` // nil = auto, -1 = none (TTS only), >=0 = explicit audio track index
 	TTSSpeed            float64                    `json:"tts_speed"`
+	TTSVoices           map[string]string          `json:"tts_voices,omitempty"` // optional per-language voice overrides, e.g. {"vi": "Hải Đăng", "en": "af_heart"}
 	Workers             int                        `json:"workers"`
 	UseGPU              bool                       `json:"use_gpu"`
 	SkipEncode          bool                       `json:"skip_encode"`
@@ -65,11 +66,19 @@ func ItemConfigFromGlobal(cfg *config.Config) ItemConfig {
 	if style == "" {
 		style = "standard"
 	}
+	var voices map[string]string
+	if len(cfg.TTSVoices) > 0 {
+		voices = make(map[string]string, len(cfg.TTSVoices))
+		for k, v := range cfg.TTSVoices {
+			voices[k] = v
+		}
+	}
 	return ItemConfig{
 		DubLanguages:        langs,
 		OriginalLanguage:    cfg.OriginalLanguage,
 		OriginalAudioIndex:  cfg.OriginalAudioIndex,
 		TTSSpeed:            cfg.TTSSpeed,
+		TTSVoices:           voices,
 		Workers:             cfg.Workers,
 		UseGPU:              cfg.UseGPU,
 		SkipEncode:          cfg.SkipEncode,

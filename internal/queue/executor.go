@@ -48,6 +48,22 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	effCfg.OriginalLanguage = job.Config.OriginalLanguage
 	effCfg.OriginalAudioIndex = job.Config.OriginalAudioIndex
 	effCfg.TTSSpeed = job.Config.TTSSpeed
+	mergedVoices := make(map[string]string, len(globalCfg.TTSVoices)+len(job.Config.TTSVoices))
+	for k, v := range globalCfg.TTSVoices {
+		if strings.TrimSpace(v) != "" {
+			mergedVoices[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		}
+	}
+	for k, v := range job.Config.TTSVoices {
+		if strings.TrimSpace(v) != "" {
+			mergedVoices[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+		}
+	}
+	if len(mergedVoices) > 0 {
+		effCfg.TTSVoices = mergedVoices
+	} else {
+		effCfg.TTSVoices = nil
+	}
 	effCfg.Workers = job.Config.Workers
 	effCfg.UseGPU = job.Config.UseGPU
 	effCfg.SkipEncode = job.Config.SkipEncode
@@ -63,7 +79,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	effCfg.UseGPU = useGPU
 	effCfg.FFmpeg = resolvedFF
 
-	// 1. Check TTS server availability (with in-browser KokoroJS fallback for English)
+	// 1. Check TTS server availability
 	remoteTTSAvailable := false
 	var remoteTTSErr string
 	if mon := mgr.TTSMonitor(); mon != nil {
@@ -77,7 +93,9 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	}
 
 	browserBridge := mgr.BrowserTTS()
-	useBrowserForEN := !remoteTTSAvailable && browserBridge != nil && browserBridge.IsReady()
+	browserENReady := browserBridge != nil && browserBridge.IsReady()
+	// Use Browser KokoroJS strictly as an offline fallback when the remote TTS backend is unavailable.
+	useBrowserForEN := browserENReady && !remoteTTSAvailable
 
 	if !remoteTTSAvailable {
 		if !useBrowserForEN {
@@ -398,8 +416,13 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		var customRenderer media.TTSLineRenderer
 		if useBrowserForEN && strings.ToLower(strings.TrimSpace(lang)) == "en" {
 			ttsCfg.Workers = 1 // Keep browser WebGPU/WASM inference sequential for stability
-			customRenderer = func(rCtx context.Context, c *config.Config, text, _ string, _ string) ([]byte, error) {
-				return browserBridge.Synthesize(rCtx, text, c.TTSSpeed)
+			customRenderer = func(rCtx context.Context, c *config.Config, text, _ string, voice string) ([]byte, error) {
+				// Only forward voice IDs compatible with kokoro-js English models
+				bVoice := ""
+				if strings.HasPrefix(voice, "af_") || strings.HasPrefix(voice, "am_") || strings.HasPrefix(voice, "bf_") || strings.HasPrefix(voice, "bm_") {
+					bVoice = voice
+				}
+				return browserBridge.SynthesizeWithVoice(rCtx, text, bVoice, c.TTSSpeed)
 			}
 		}
 

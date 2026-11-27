@@ -88,9 +88,17 @@ export function HeaderBar({
             onClick={onCheckTTS}
             title={
               ttsStatus?.error ||
-              (ttsStatus?.transport === 'grpc'
-                ? `TTS gRPC: ${ttsStatus.grpc_url} (HTTP fallback: ${ttsStatus.url})`
-                : `TTS HTTP: ${ttsStatus?.url || 'checking...'}${ttsStatus?.grpc_url ? ` (gRPC ${ttsStatus.grpc_url} unavailable)` : ''}`)
+              [
+                ttsStatus?.transport === 'grpc'
+                  ? `TTS gRPC: ${ttsStatus.grpc_url} (HTTP fallback: ${ttsStatus.url})`
+                  : `TTS HTTP: ${ttsStatus?.url || 'checking...'}${ttsStatus?.grpc_url ? ` (gRPC ${ttsStatus.grpc_url} unavailable)` : ''}`,
+                ttsStatus?.engine
+                  ? `Engine: ${ttsStatus.engine}${ttsStatus.model ? ` (${ttsStatus.model})` : ''}`
+                  : '',
+                ttsStatus?.sample_rate ? `Sample Rate: ${ttsStatus.sample_rate} Hz` : '',
+              ]
+                .filter(Boolean)
+                .join(' • ')
             }
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
               ttsStatus?.available
@@ -106,7 +114,11 @@ export function HeaderBar({
             <span>
               TTS{' '}
               {ttsStatus?.available
-                ? `Online · ${ttsStatus.transport === 'grpc' ? 'gRPC' : 'HTTP'} (${ttsStatus.latency_ms}ms)`
+                ? `Online · ${ttsStatus.transport === 'grpc' ? 'gRPC' : 'HTTP'}${
+                    ttsStatus.engine ? ` · ${ttsStatus.engine}` : ''
+                  }${
+                    ttsStatus.sample_rate ? ` ${(ttsStatus.sample_rate / 1000).toFixed(0)}kHz` : ''
+                  } (${ttsStatus.latency_ms}ms)`
                 : 'Offline'}
             </span>
             <RefreshCw className={`h-3 w-3 opacity-70 ${checkingTTS ? 'animate-spin' : ''}`} />
@@ -118,7 +130,7 @@ export function HeaderBar({
             onClick={onToggleBrowserKokoro}
             title={
               browserKokoroError ||
-              'Run Kokoro-82M (ONNX) directly in this browser tab as an offline English TTS fallback'
+              'Run Kokoro-82M (ONNX) in this browser tab for English TTS (used automatically when offline or paired with VieNeu-TTS)'
             }
             className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 transition ${
               browserKokoroState === 'ready'

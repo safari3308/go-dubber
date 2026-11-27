@@ -177,10 +177,12 @@ type SynthesizeRequest struct {
 	Text string `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
 	// Target language (default: LANGUAGE_VI).
 	Lang Language `protobuf:"varint,2,opt,name=lang,proto3,enum=tts.v1.Language" json:"lang,omitempty"`
-	// Voice role (default: VOICE_ROLE_A).
+	// Legacy voice role preset (default: VOICE_ROLE_A). Ignored when voice is non-empty.
 	Role VoiceRole `protobuf:"varint,3,opt,name=role,proto3,enum=tts.v1.VoiceRole" json:"role,omitempty"`
 	// Speech speed multiplier. 0 defaults to 1.0; valid range is (0.25, 4.0].
-	Speed         float32 `protobuf:"fixed32,4,opt,name=speed,proto3" json:"speed,omitempty"`
+	Speed float32 `protobuf:"fixed32,4,opt,name=speed,proto3" json:"speed,omitempty"`
+	// Explicit voice identifier (e.g. "Hải Đăng", "duc_duy", "af_heart"). Overrides role when non-empty.
+	Voice         string `protobuf:"bytes,5,opt,name=voice,proto3" json:"voice,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -241,6 +243,13 @@ func (x *SynthesizeRequest) GetSpeed() float32 {
 		return x.Speed
 	}
 	return 0
+}
+
+func (x *SynthesizeRequest) GetVoice() string {
+	if x != nil {
+		return x.Voice
+	}
+	return ""
 }
 
 type SynthesizeResponse struct {
@@ -622,16 +631,323 @@ func (x *SyncSubtitleResponse) GetSyncedSrt() []byte {
 	return nil
 }
 
+type GetInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInfoRequest) Reset() {
+	*x = GetInfoRequest{}
+	mi := &file_tts_v1_tts_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInfoRequest) ProtoMessage() {}
+
+func (x *GetInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tts_v1_tts_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInfoRequest.ProtoReflect.Descriptor instead.
+func (*GetInfoRequest) Descriptor() ([]byte, []int) {
+	return file_tts_v1_tts_proto_rawDescGZIP(), []int{7}
+}
+
+type GetInfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Active TTS engine name (e.g. "kokoro" or "vieneu-tts").
+	Engine string `protobuf:"bytes,1,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Active model/mode identifier (e.g. "kokoro-v1", "v3turbo", "v3nano").
+	Model string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	// Active output sample rate in Hz (e.g. 24000 or 48000).
+	SampleRate int32 `protobuf:"varint,3,opt,name=sample_rate,json=sampleRate,proto3" json:"sample_rate,omitempty"`
+	// Engine native sample rate in Hz.
+	NativeSampleRate int32 `protobuf:"varint,4,opt,name=native_sample_rate,json=nativeSampleRate,proto3" json:"native_sample_rate,omitempty"`
+	// Active voice role mappings (vi_a, vi_b, en_a, en_b).
+	Voices        map[string]string `protobuf:"bytes,5,rep,name=voices,proto3" json:"voices,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInfoResponse) Reset() {
+	*x = GetInfoResponse{}
+	mi := &file_tts_v1_tts_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInfoResponse) ProtoMessage() {}
+
+func (x *GetInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tts_v1_tts_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInfoResponse.ProtoReflect.Descriptor instead.
+func (*GetInfoResponse) Descriptor() ([]byte, []int) {
+	return file_tts_v1_tts_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetInfoResponse) GetEngine() string {
+	if x != nil {
+		return x.Engine
+	}
+	return ""
+}
+
+func (x *GetInfoResponse) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *GetInfoResponse) GetSampleRate() int32 {
+	if x != nil {
+		return x.SampleRate
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetNativeSampleRate() int32 {
+	if x != nil {
+		return x.NativeSampleRate
+	}
+	return 0
+}
+
+func (x *GetInfoResponse) GetVoices() map[string]string {
+	if x != nil {
+		return x.Voices
+	}
+	return nil
+}
+
+type VoiceInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact voice identifier to pass in SynthesizeRequest.voice.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Human-friendly display name.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Languages supported by this voice (e.g. ["vi", "en"] or ["en"]).
+	Languages []string `protobuf:"bytes,3,rep,name=languages,proto3" json:"languages,omitempty"`
+	// Optional gender ("male", "female", or "").
+	Gender string `protobuf:"bytes,4,opt,name=gender,proto3" json:"gender,omitempty"`
+	// Optional style / accent description.
+	Description   string `protobuf:"bytes,5,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VoiceInfo) Reset() {
+	*x = VoiceInfo{}
+	mi := &file_tts_v1_tts_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VoiceInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VoiceInfo) ProtoMessage() {}
+
+func (x *VoiceInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_tts_v1_tts_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VoiceInfo.ProtoReflect.Descriptor instead.
+func (*VoiceInfo) Descriptor() ([]byte, []int) {
+	return file_tts_v1_tts_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *VoiceInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *VoiceInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *VoiceInfo) GetLanguages() []string {
+	if x != nil {
+		return x.Languages
+	}
+	return nil
+}
+
+func (x *VoiceInfo) GetGender() string {
+	if x != nil {
+		return x.Gender
+	}
+	return ""
+}
+
+func (x *VoiceInfo) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+type ListVoicesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional language filter. LANGUAGE_UNSPECIFIED returns all available voices.
+	Lang          Language `protobuf:"varint,1,opt,name=lang,proto3,enum=tts.v1.Language" json:"lang,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListVoicesRequest) Reset() {
+	*x = ListVoicesRequest{}
+	mi := &file_tts_v1_tts_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListVoicesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListVoicesRequest) ProtoMessage() {}
+
+func (x *ListVoicesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_tts_v1_tts_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListVoicesRequest.ProtoReflect.Descriptor instead.
+func (*ListVoicesRequest) Descriptor() ([]byte, []int) {
+	return file_tts_v1_tts_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ListVoicesRequest) GetLang() Language {
+	if x != nil {
+		return x.Lang
+	}
+	return Language_LANGUAGE_UNSPECIFIED
+}
+
+type ListVoicesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Active TTS engine name (e.g. "kokoro" or "vieneu-tts").
+	Engine string `protobuf:"bytes,1,opt,name=engine,proto3" json:"engine,omitempty"`
+	// Available voices (filtered by lang if specified).
+	Voices []*VoiceInfo `protobuf:"bytes,2,rep,name=voices,proto3" json:"voices,omitempty"`
+	// Default voice ID per language (e.g. {"vi": "duc_duy", "en": "af_heart"}).
+	DefaultVoices map[string]string `protobuf:"bytes,3,rep,name=default_voices,json=defaultVoices,proto3" json:"default_voices,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListVoicesResponse) Reset() {
+	*x = ListVoicesResponse{}
+	mi := &file_tts_v1_tts_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListVoicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListVoicesResponse) ProtoMessage() {}
+
+func (x *ListVoicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_tts_v1_tts_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListVoicesResponse.ProtoReflect.Descriptor instead.
+func (*ListVoicesResponse) Descriptor() ([]byte, []int) {
+	return file_tts_v1_tts_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ListVoicesResponse) GetEngine() string {
+	if x != nil {
+		return x.Engine
+	}
+	return ""
+}
+
+func (x *ListVoicesResponse) GetVoices() []*VoiceInfo {
+	if x != nil {
+		return x.Voices
+	}
+	return nil
+}
+
+func (x *ListVoicesResponse) GetDefaultVoices() map[string]string {
+	if x != nil {
+		return x.DefaultVoices
+	}
+	return nil
+}
+
 var File_tts_v1_tts_proto protoreflect.FileDescriptor
 
 const file_tts_v1_tts_proto_rawDesc = "" +
 	"\n" +
-	"\x10tts/v1/tts.proto\x12\x06tts.v1\"\x8a\x01\n" +
+	"\x10tts/v1/tts.proto\x12\x06tts.v1\"\xa0\x01\n" +
 	"\x11SynthesizeRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12$\n" +
 	"\x04lang\x18\x02 \x01(\x0e2\x10.tts.v1.LanguageR\x04lang\x12%\n" +
 	"\x04role\x18\x03 \x01(\x0e2\x11.tts.v1.VoiceRoleR\x04role\x12\x14\n" +
-	"\x05speed\x18\x04 \x01(\x02R\x05speed\"}\n" +
+	"\x05speed\x18\x04 \x01(\x02R\x05speed\x12\x14\n" +
+	"\x05voice\x18\x05 \x01(\tR\x05voice\"}\n" +
 	"\x12SynthesizeResponse\x12\x1b\n" +
 	"\taudio_wav\x18\x01 \x01(\fR\baudioWav\x12\x1f\n" +
 	"\vsample_rate\x18\x02 \x01(\x05R\n" +
@@ -657,7 +973,33 @@ const file_tts_v1_tts_proto_rawDesc = "" +
 	"\apayload\"5\n" +
 	"\x14SyncSubtitleResponse\x12\x1d\n" +
 	"\n" +
-	"synced_srt\x18\x01 \x01(\fR\tsyncedSrt*F\n" +
+	"synced_srt\x18\x01 \x01(\fR\tsyncedSrt\"\x10\n" +
+	"\x0eGetInfoRequest\"\x86\x02\n" +
+	"\x0fGetInfoResponse\x12\x16\n" +
+	"\x06engine\x18\x01 \x01(\tR\x06engine\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1f\n" +
+	"\vsample_rate\x18\x03 \x01(\x05R\n" +
+	"sampleRate\x12,\n" +
+	"\x12native_sample_rate\x18\x04 \x01(\x05R\x10nativeSampleRate\x12;\n" +
+	"\x06voices\x18\x05 \x03(\v2#.tts.v1.GetInfoResponse.VoicesEntryR\x06voices\x1a9\n" +
+	"\vVoicesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x87\x01\n" +
+	"\tVoiceInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
+	"\tlanguages\x18\x03 \x03(\tR\tlanguages\x12\x16\n" +
+	"\x06gender\x18\x04 \x01(\tR\x06gender\x12 \n" +
+	"\vdescription\x18\x05 \x01(\tR\vdescription\"9\n" +
+	"\x11ListVoicesRequest\x12$\n" +
+	"\x04lang\x18\x01 \x01(\x0e2\x10.tts.v1.LanguageR\x04lang\"\xef\x01\n" +
+	"\x12ListVoicesResponse\x12\x16\n" +
+	"\x06engine\x18\x01 \x01(\tR\x06engine\x12)\n" +
+	"\x06voices\x18\x02 \x03(\v2\x11.tts.v1.VoiceInfoR\x06voices\x12T\n" +
+	"\x0edefault_voices\x18\x03 \x03(\v2-.tts.v1.ListVoicesResponse.DefaultVoicesEntryR\rdefaultVoices\x1a@\n" +
+	"\x12DefaultVoicesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*F\n" +
 	"\bLanguage\x12\x18\n" +
 	"\x14LANGUAGE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vLANGUAGE_VI\x10\x01\x12\x0f\n" +
@@ -669,9 +1011,12 @@ const file_tts_v1_tts_proto_rawDesc = "" +
 	"\rReferenceType\x12\x1e\n" +
 	"\x1aREFERENCE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12REFERENCE_TYPE_SUB\x10\x01\x12\x18\n" +
-	"\x14REFERENCE_TYPE_AUDIO\x10\x022\xb2\x02\n" +
+	"\x14REFERENCE_TYPE_AUDIO\x10\x022\xb3\x03\n" +
 	"\n" +
-	"TTSService\x12C\n" +
+	"TTSService\x12:\n" +
+	"\aGetInfo\x12\x16.tts.v1.GetInfoRequest\x1a\x17.tts.v1.GetInfoResponse\x12C\n" +
+	"\n" +
+	"ListVoices\x12\x19.tts.v1.ListVoicesRequest\x1a\x1a.tts.v1.ListVoicesResponse\x12C\n" +
 	"\n" +
 	"Synthesize\x12\x19.tts.v1.SynthesizeRequest\x1a\x1a.tts.v1.SynthesizeResponse\x12C\n" +
 	"\x10SynthesizeStream\x12\x19.tts.v1.SynthesizeRequest\x1a\x12.tts.v1.AudioChunk0\x01\x12I\n" +
@@ -691,7 +1036,7 @@ func file_tts_v1_tts_proto_rawDescGZIP() []byte {
 }
 
 var file_tts_v1_tts_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_tts_v1_tts_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_tts_v1_tts_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_tts_v1_tts_proto_goTypes = []any{
 	(Language)(0),                // 0: tts.v1.Language
 	(VoiceRole)(0),               // 1: tts.v1.VoiceRole
@@ -703,26 +1048,41 @@ var file_tts_v1_tts_proto_goTypes = []any{
 	(*SyncSubtitleMetadata)(nil), // 7: tts.v1.SyncSubtitleMetadata
 	(*SyncSubtitleChunk)(nil),    // 8: tts.v1.SyncSubtitleChunk
 	(*SyncSubtitleResponse)(nil), // 9: tts.v1.SyncSubtitleResponse
+	(*GetInfoRequest)(nil),       // 10: tts.v1.GetInfoRequest
+	(*GetInfoResponse)(nil),      // 11: tts.v1.GetInfoResponse
+	(*VoiceInfo)(nil),            // 12: tts.v1.VoiceInfo
+	(*ListVoicesRequest)(nil),    // 13: tts.v1.ListVoicesRequest
+	(*ListVoicesResponse)(nil),   // 14: tts.v1.ListVoicesResponse
+	nil,                          // 15: tts.v1.GetInfoResponse.VoicesEntry
+	nil,                          // 16: tts.v1.ListVoicesResponse.DefaultVoicesEntry
 }
 var file_tts_v1_tts_proto_depIdxs = []int32{
-	0, // 0: tts.v1.SynthesizeRequest.lang:type_name -> tts.v1.Language
-	1, // 1: tts.v1.SynthesizeRequest.role:type_name -> tts.v1.VoiceRole
-	2, // 2: tts.v1.SyncSubtitleRequest.ref_type:type_name -> tts.v1.ReferenceType
-	2, // 3: tts.v1.SyncSubtitleMetadata.ref_type:type_name -> tts.v1.ReferenceType
-	7, // 4: tts.v1.SyncSubtitleChunk.metadata:type_name -> tts.v1.SyncSubtitleMetadata
-	3, // 5: tts.v1.TTSService.Synthesize:input_type -> tts.v1.SynthesizeRequest
-	3, // 6: tts.v1.TTSService.SynthesizeStream:input_type -> tts.v1.SynthesizeRequest
-	6, // 7: tts.v1.TTSService.SyncSubtitle:input_type -> tts.v1.SyncSubtitleRequest
-	8, // 8: tts.v1.TTSService.SyncSubtitleStream:input_type -> tts.v1.SyncSubtitleChunk
-	4, // 9: tts.v1.TTSService.Synthesize:output_type -> tts.v1.SynthesizeResponse
-	5, // 10: tts.v1.TTSService.SynthesizeStream:output_type -> tts.v1.AudioChunk
-	9, // 11: tts.v1.TTSService.SyncSubtitle:output_type -> tts.v1.SyncSubtitleResponse
-	9, // 12: tts.v1.TTSService.SyncSubtitleStream:output_type -> tts.v1.SyncSubtitleResponse
-	9, // [9:13] is the sub-list for method output_type
-	5, // [5:9] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	0,  // 0: tts.v1.SynthesizeRequest.lang:type_name -> tts.v1.Language
+	1,  // 1: tts.v1.SynthesizeRequest.role:type_name -> tts.v1.VoiceRole
+	2,  // 2: tts.v1.SyncSubtitleRequest.ref_type:type_name -> tts.v1.ReferenceType
+	2,  // 3: tts.v1.SyncSubtitleMetadata.ref_type:type_name -> tts.v1.ReferenceType
+	7,  // 4: tts.v1.SyncSubtitleChunk.metadata:type_name -> tts.v1.SyncSubtitleMetadata
+	15, // 5: tts.v1.GetInfoResponse.voices:type_name -> tts.v1.GetInfoResponse.VoicesEntry
+	0,  // 6: tts.v1.ListVoicesRequest.lang:type_name -> tts.v1.Language
+	12, // 7: tts.v1.ListVoicesResponse.voices:type_name -> tts.v1.VoiceInfo
+	16, // 8: tts.v1.ListVoicesResponse.default_voices:type_name -> tts.v1.ListVoicesResponse.DefaultVoicesEntry
+	10, // 9: tts.v1.TTSService.GetInfo:input_type -> tts.v1.GetInfoRequest
+	13, // 10: tts.v1.TTSService.ListVoices:input_type -> tts.v1.ListVoicesRequest
+	3,  // 11: tts.v1.TTSService.Synthesize:input_type -> tts.v1.SynthesizeRequest
+	3,  // 12: tts.v1.TTSService.SynthesizeStream:input_type -> tts.v1.SynthesizeRequest
+	6,  // 13: tts.v1.TTSService.SyncSubtitle:input_type -> tts.v1.SyncSubtitleRequest
+	8,  // 14: tts.v1.TTSService.SyncSubtitleStream:input_type -> tts.v1.SyncSubtitleChunk
+	11, // 15: tts.v1.TTSService.GetInfo:output_type -> tts.v1.GetInfoResponse
+	14, // 16: tts.v1.TTSService.ListVoices:output_type -> tts.v1.ListVoicesResponse
+	4,  // 17: tts.v1.TTSService.Synthesize:output_type -> tts.v1.SynthesizeResponse
+	5,  // 18: tts.v1.TTSService.SynthesizeStream:output_type -> tts.v1.AudioChunk
+	9,  // 19: tts.v1.TTSService.SyncSubtitle:output_type -> tts.v1.SyncSubtitleResponse
+	9,  // 20: tts.v1.TTSService.SyncSubtitleStream:output_type -> tts.v1.SyncSubtitleResponse
+	15, // [15:21] is the sub-list for method output_type
+	9,  // [9:15] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_tts_v1_tts_proto_init() }
@@ -741,7 +1101,7 @@ func file_tts_v1_tts_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tts_v1_tts_proto_rawDesc), len(file_tts_v1_tts_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   7,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

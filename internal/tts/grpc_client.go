@@ -225,13 +225,99 @@ func CheckGRPCHealthContext(ctx context.Context, grpcAddr string) error {
 	return nil
 }
 
+func getServerInfoGRPC(ctx context.Context, grpcAddr string) (*ServerInfo, error) {
+	if grpcAddr == "" {
+		return nil, fmt.Errorf("gRPC address not configured")
+	}
+	conn, err := getGRPCConn(grpcAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, grpcHealthTimeout)
+	defer cancel()
+
+	client := ttsv1.NewTTSServiceClient(conn)
+	resp, err := client.GetInfo(callCtx, &ttsv1.GetInfoRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	sr := int(resp.GetSampleRate())
+	if sr <= 0 {
+		sr = DefaultSampleRate
+	}
+	nativeSR := int(resp.GetNativeSampleRate())
+	if nativeSR <= 0 {
+		nativeSR = sr
+	}
+	voices := make(map[string]string, len(resp.GetVoices()))
+	for k, v := range resp.GetVoices() {
+		voices[k] = v
+	}
+
+	return &ServerInfo{
+		Engine:           resp.GetEngine(),
+		Model:            resp.GetModel(),
+		SampleRate:       sr,
+		NativeSampleRate: nativeSR,
+		Voices:           voices,
+	}, nil
+}
+
+func listVoicesGRPC(ctx context.Context, grpcAddr string, lang string) (*VoicesResponse, error) {
+	if grpcAddr == "" {
+		return nil, fmt.Errorf("gRPC address not configured")
+	}
+	conn, err := getGRPCConn(grpcAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, grpcHealthTimeout)
+	defer cancel()
+
+	var protoLang ttsv1.Language
+	if lang != "" {
+		protoLang = mapProtoLanguage(lang)
+	}
+
+	client := ttsv1.NewTTSServiceClient(conn)
+	resp, err := client.ListVoices(callCtx, &ttsv1.ListVoicesRequest{Lang: protoLang})
+	if err != nil {
+		return nil, err
+	}
+
+	voices := make([]VoiceInfo, 0, len(resp.GetVoices()))
+	for _, v := range resp.GetVoices() {
+		langs := append([]string(nil), v.GetLanguages()...)
+		voices = append(voices, VoiceInfo{
+			ID:          v.GetId(),
+			Name:        v.GetName(),
+			Languages:   langs,
+			Gender:      v.GetGender(),
+			Description: v.GetDescription(),
+		})
+	}
+	defaults := make(map[string]string, len(resp.GetDefaultVoices()))
+	for k, v := range resp.GetDefaultVoices() {
+		defaults[k] = v
+	}
+
+	return &VoicesResponse{
+		Engine:        resp.GetEngine(),
+		Voices:        voices,
+		DefaultVoices: defaults,
+	}, nil
+}
+
 func renderSingleLineTTSGRPC(
 	ctx context.Context,
 	grpcAddr string,
 	apiToken string,
 	text string,
 	lang string,
-	role string,
+	voice string,
 	speed float64,
 ) ([]byte, error) {
 	conn, err := getGRPCConn(grpcAddr)
@@ -242,13 +328,21 @@ func renderSingleLineTTSGRPC(
 	callCtx, cancel := context.WithTimeout(withGRPCAuth(ctx, apiToken), 30*time.Second)
 	defer cancel()
 
-	client := ttsv1.NewTTSServiceClient(conn)
-	resp, err := client.Synthesize(callCtx, &ttsv1.SynthesizeRequest{
+	req := &ttsv1.SynthesizeRequest{
 		Text:  text,
 		Lang:  mapProtoLanguage(lang),
-		Role:  mapProtoRole(role),
 		Speed: float32(speed),
-	})
+	}
+	if voice != "" {
+		if isLegacyRoleAlias(voice) {
+			req.Role = mapProtoRole(voice)
+		} else {
+			req.Voice = voice
+		}
+	}
+
+	client := ttsv1.NewTTSServiceClient(conn)
+	resp, err := client.Synthesize(callCtx, req)
 	if err != nil {
 		return nil, err
 	}

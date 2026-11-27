@@ -15,7 +15,7 @@ func TestRunDubbingSession_ConfigUnchanged(t *testing.T) {
 	emptyNasDir := filepath.Join(tempDir, "nas")
 	_ = os.MkdirAll(emptyNasDir, 0755)
 
-	cfgContent := fmt.Sprintf(`{"nas_dir": %q, "api_url": "http://127.0.0.1:9999"}`, emptyNasDir)
+	cfgContent := fmt.Sprintf(`{"nas_dir": %q, "api_url": "http://127.0.0.1:9999", "grpc_url": "disabled"}`, emptyNasDir)
 	_ = os.WriteFile(configPath, []byte(cfgContent), 0644)
 
 	changed, err := runDubbingSession(configPath)
@@ -40,7 +40,7 @@ func TestRunDubbingSession_ConfigChanged(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfgContent := fmt.Sprintf(`{"nas_dir": %q, "api_url": %q}`, nasDir, server.URL)
+	cfgContent := fmt.Sprintf(`{"nas_dir": %q, "api_url": %q, "grpc_url": "disabled"}`, nasDir, server.URL)
 	_ = os.WriteFile(configPath, []byte(cfgContent), 0644)
 
 	changed, err := runDubbingSession(configPath)

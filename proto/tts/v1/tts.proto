@@ -30,10 +30,12 @@ message SynthesizeRequest {
   string text = 1;
   // Target language (default: LANGUAGE_VI).
   Language lang = 2;
-  // Voice role (default: VOICE_ROLE_A).
+  // Legacy voice role preset (default: VOICE_ROLE_A). Ignored when voice is non-empty.
   VoiceRole role = 3;
   // Speech speed multiplier. 0 defaults to 1.0; valid range is (0.25, 4.0].
   float speed = 4;
+  // Explicit voice identifier (e.g. "Hải Đăng", "duc_duy", "af_heart"). Overrides role when non-empty.
+  string voice = 5;
 }
 
 message SynthesizeResponse {
@@ -83,7 +85,55 @@ message SyncSubtitleResponse {
   bytes synced_srt = 1;
 }
 
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  // Active TTS engine name (e.g. "kokoro" or "vieneu-tts").
+  string engine = 1;
+  // Active model/mode identifier (e.g. "kokoro-v1", "v3turbo", "v3nano").
+  string model = 2;
+  // Active output sample rate in Hz (e.g. 24000 or 48000).
+  int32 sample_rate = 3;
+  // Engine native sample rate in Hz.
+  int32 native_sample_rate = 4;
+  // Active voice role mappings (vi_a, vi_b, en_a, en_b).
+  map<string, string> voices = 5;
+}
+
+message VoiceInfo {
+  // Exact voice identifier to pass in SynthesizeRequest.voice.
+  string id = 1;
+  // Human-friendly display name.
+  string name = 2;
+  // Languages supported by this voice (e.g. ["vi", "en"] or ["en"]).
+  repeated string languages = 3;
+  // Optional gender ("male", "female", or "").
+  string gender = 4;
+  // Optional style / accent description.
+  string description = 5;
+}
+
+message ListVoicesRequest {
+  // Optional language filter. LANGUAGE_UNSPECIFIED returns all available voices.
+  Language lang = 1;
+}
+
+message ListVoicesResponse {
+  // Active TTS engine name (e.g. "kokoro" or "vieneu-tts").
+  string engine = 1;
+  // Available voices (filtered by lang if specified).
+  repeated VoiceInfo voices = 2;
+  // Default voice ID per language (e.g. {"vi": "duc_duy", "en": "af_heart"}).
+  map<string, string> default_voices = 3;
+}
+
 service TTSService {
+  // Return active TTS engine/model metadata and sample-rate configuration.
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+
+  // List available voices (optionally filtered by language) and per-language defaults.
+  rpc ListVoices(ListVoicesRequest) returns (ListVoicesResponse);
+
   // Synthesize text into a single complete 24kHz PCM_16 WAV payload.
   rpc Synthesize(SynthesizeRequest) returns (SynthesizeResponse);
 

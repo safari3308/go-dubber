@@ -19,6 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	TTSService_GetInfo_FullMethodName            = "/tts.v1.TTSService/GetInfo"
+	TTSService_ListVoices_FullMethodName         = "/tts.v1.TTSService/ListVoices"
 	TTSService_Synthesize_FullMethodName         = "/tts.v1.TTSService/Synthesize"
 	TTSService_SynthesizeStream_FullMethodName   = "/tts.v1.TTSService/SynthesizeStream"
 	TTSService_SyncSubtitle_FullMethodName       = "/tts.v1.TTSService/SyncSubtitle"
@@ -29,6 +31,10 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type TTSServiceClient interface {
+	// Return active TTS engine/model metadata and sample-rate configuration.
+	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// List available voices (optionally filtered by language) and per-language defaults.
+	ListVoices(ctx context.Context, in *ListVoicesRequest, opts ...grpc.CallOption) (*ListVoicesResponse, error)
 	// Synthesize text into a single complete 24kHz PCM_16 WAV payload.
 	Synthesize(ctx context.Context, in *SynthesizeRequest, opts ...grpc.CallOption) (*SynthesizeResponse, error)
 	// Stream raw 24kHz pcm_s16le audio chunks as they are synthesized.
@@ -45,6 +51,26 @@ type tTSServiceClient struct {
 
 func NewTTSServiceClient(cc grpc.ClientConnInterface) TTSServiceClient {
 	return &tTSServiceClient{cc}
+}
+
+func (c *tTSServiceClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetInfoResponse)
+	err := c.cc.Invoke(ctx, TTSService_GetInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tTSServiceClient) ListVoices(ctx context.Context, in *ListVoicesRequest, opts ...grpc.CallOption) (*ListVoicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListVoicesResponse)
+	err := c.cc.Invoke(ctx, TTSService_ListVoices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *tTSServiceClient) Synthesize(ctx context.Context, in *SynthesizeRequest, opts ...grpc.CallOption) (*SynthesizeResponse, error) {
@@ -103,6 +129,10 @@ type TTSService_SyncSubtitleStreamClient = grpc.ClientStreamingClient[SyncSubtit
 // All implementations must embed UnimplementedTTSServiceServer
 // for forward compatibility.
 type TTSServiceServer interface {
+	// Return active TTS engine/model metadata and sample-rate configuration.
+	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// List available voices (optionally filtered by language) and per-language defaults.
+	ListVoices(context.Context, *ListVoicesRequest) (*ListVoicesResponse, error)
 	// Synthesize text into a single complete 24kHz PCM_16 WAV payload.
 	Synthesize(context.Context, *SynthesizeRequest) (*SynthesizeResponse, error)
 	// Stream raw 24kHz pcm_s16le audio chunks as they are synthesized.
@@ -121,6 +151,12 @@ type TTSServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTTSServiceServer struct{}
 
+func (UnimplementedTTSServiceServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedTTSServiceServer) ListVoices(context.Context, *ListVoicesRequest) (*ListVoicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListVoices not implemented")
+}
 func (UnimplementedTTSServiceServer) Synthesize(context.Context, *SynthesizeRequest) (*SynthesizeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Synthesize not implemented")
 }
@@ -152,6 +188,42 @@ func RegisterTTSServiceServer(s grpc.ServiceRegistrar, srv TTSServiceServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&TTSService_ServiceDesc, srv)
+}
+
+func _TTSService_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TTSServiceServer).GetInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TTSService_GetInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TTSServiceServer).GetInfo(ctx, req.(*GetInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TTSService_ListVoices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListVoicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TTSServiceServer).ListVoices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TTSService_ListVoices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TTSServiceServer).ListVoices(ctx, req.(*ListVoicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _TTSService_Synthesize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -215,6 +287,14 @@ var TTSService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "tts.v1.TTSService",
 	HandlerType: (*TTSServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetInfo",
+			Handler:    _TTSService_GetInfo_Handler,
+		},
+		{
+			MethodName: "ListVoices",
+			Handler:    _TTSService_ListVoices_Handler,
+		},
 		{
 			MethodName: "Synthesize",
 			Handler:    _TTSService_Synthesize_Handler,

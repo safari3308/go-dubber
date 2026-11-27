@@ -25,13 +25,43 @@ import (
 
 type mockTTSServer struct {
 	ttsv1.UnimplementedTTSServiceServer
-	expectedToken string
-	lastText      string
-	lastLang      ttsv1.Language
-	lastRole      ttsv1.VoiceRole
-	lastRefType   ttsv1.ReferenceType
-	lastTargetSRT []byte
-	lastRefBytes  []byte
+	expectedToken   string
+	engine          string
+	model           string
+	sampleRate      int32
+	nativeRate      int32
+	voices          map[string]string
+	voiceCatalog    []*ttsv1.VoiceInfo
+	defaultVoices   map[string]string
+	disableGetInfo  bool
+	lastText        string
+	lastLang        ttsv1.Language
+	lastRole        ttsv1.VoiceRole
+	lastVoice       string
+	lastRefType     ttsv1.ReferenceType
+	lastTargetSRT   []byte
+	lastRefBytes    []byte
+}
+
+func (s *mockTTSServer) GetInfo(ctx context.Context, _ *ttsv1.GetInfoRequest) (*ttsv1.GetInfoResponse, error) {
+	if s.disableGetInfo {
+		return nil, status.Error(codes.Unimplemented, "method GetInfo not implemented")
+	}
+	sr := s.sampleRate
+	if sr == 0 {
+		sr = 24000
+	}
+	nsr := s.nativeRate
+	if nsr == 0 {
+		nsr = sr
+	}
+	return &ttsv1.GetInfoResponse{
+		Engine:           s.engine,
+		Model:            s.model,
+		SampleRate:       sr,
+		NativeSampleRate: nsr,
+		Voices:           s.voices,
+	}, nil
 }
 
 func (s *mockTTSServer) checkAuth(ctx context.Context) error {
@@ -49,6 +79,37 @@ func (s *mockTTSServer) checkAuth(ctx context.Context) error {
 	return nil
 }
 
+func (s *mockTTSServer) ListVoices(ctx context.Context, req *ttsv1.ListVoicesRequest) (*ttsv1.ListVoicesResponse, error) {
+	if s.disableGetInfo {
+		return nil, status.Error(codes.Unimplemented, "method ListVoices not implemented")
+	}
+	var filtered []*ttsv1.VoiceInfo
+	wantLang := ""
+	switch req.GetLang() {
+	case ttsv1.Language_LANGUAGE_VI:
+		wantLang = "vi"
+	case ttsv1.Language_LANGUAGE_EN:
+		wantLang = "en"
+	}
+	for _, v := range s.voiceCatalog {
+		if wantLang == "" {
+			filtered = append(filtered, v)
+			continue
+		}
+		for _, l := range v.GetLanguages() {
+			if l == wantLang {
+				filtered = append(filtered, v)
+				break
+			}
+		}
+	}
+	return &ttsv1.ListVoicesResponse{
+		Engine:        s.engine,
+		Voices:        filtered,
+		DefaultVoices: s.defaultVoices,
+	}, nil
+}
+
 func (s *mockTTSServer) Synthesize(ctx context.Context, req *ttsv1.SynthesizeRequest) (*ttsv1.SynthesizeResponse, error) {
 	if err := s.checkAuth(ctx); err != nil {
 		return nil, err
@@ -56,6 +117,7 @@ func (s *mockTTSServer) Synthesize(ctx context.Context, req *ttsv1.SynthesizeReq
 	s.lastText = req.GetText()
 	s.lastLang = req.GetLang()
 	s.lastRole = req.GetRole()
+	s.lastVoice = req.GetVoice()
 	return &ttsv1.SynthesizeResponse{
 		AudioWav:        []byte("RIFF-GRPC-WAV-DATA"),
 		SampleRate:      24000,
@@ -299,5 +361,151 @@ func TestGRPC_UnauthenticatedDoesNotFallback(t *testing.T) {
 	}
 	if httpCalled {
 		t.Error("expected Unauthenticated gRPC error not to fall back to HTTP")
+	}
+}
+
+func TestGetServerInfo_GRPCAndMonitor(t *testing.T) {
+	ResetGRPCFallbackCache()
+	mock := &mockTTSServer{
+		engine:     "vieneu-tts",
+		model:      "v3turbo",
+		sampleRate: 48000,
+		nativeRate: 48000,
+		voices:     map[string]string{"vi_a": "Hải Đăng", "vi_b": "Mai Anh"},
+	}
+	addr, cleanup := startMockGRPCServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		ApiUrl:  "http://127.0.0.1:1",
+		GrpcUrl: addr,
+	}
+
+	info, err := GetServerInfo(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("GetServerInfo via gRPC failed: %v", err)
+	}
+	if info.Engine != "vieneu-tts" || info.Model != "v3turbo" || info.SampleRate != 48000 || info.NativeSampleRate != 48000 {
+		t.Errorf("unexpected ServerInfo: %+v", info)
+	}
+	if info.Voices["vi_a"] != "Hải Đăng" {
+		t.Errorf("unexpected voices: %+v", info.Voices)
+	}
+
+	// Verify HealthMonitor populates Engine, Model, and SampleRate
+	mon := NewHealthMonitor(func() *config.Config { return cfg }, time.Second, nil)
+	st := mon.CheckNow(context.Background())
+	if !st.Available || st.Transport != "grpc" || st.Engine != "vieneu-tts" || st.Model != "v3turbo" || st.SampleRate != 48000 {
+		t.Fatalf("unexpected HealthStatus: %+v", st)
+	}
+}
+
+func TestGetServerInfo_HTTPFallbackAndLegacyDefault(t *testing.T) {
+	ResetGRPCFallbackCache()
+	deadGRPC := closedLocalAddr(t)
+
+	// 1. HTTP /v1/info fallback
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/info":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"engine":"kokoro","model":"kokoro-v1","sample_rate":24000,"native_sample_rate":24000,"voices":{"vi_a":"vf_dora"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer httpSrv.Close()
+
+	cfg := &config.Config{ApiUrl: httpSrv.URL, GrpcUrl: deadGRPC}
+	info, err := GetServerInfo(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("GetServerInfo via HTTP fallback failed: %v", err)
+	}
+	if info.Engine != "kokoro" || info.Model != "kokoro-v1" || info.SampleRate != 24000 {
+		t.Errorf("unexpected HTTP ServerInfo: %+v", info)
+	}
+
+	// 2. Legacy server returning 404 / Unimplemented -> graceful 24000 Hz default
+	legacyGRPCMock := &mockTTSServer{disableGetInfo: true}
+	legacyAddr, cleanup := startMockGRPCServer(t, legacyGRPCMock)
+	defer cleanup()
+
+	legacyHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer legacyHTTP.Close()
+
+	legacyCfg := &config.Config{ApiUrl: legacyHTTP.URL, GrpcUrl: legacyAddr}
+	legacyInfo, err := GetServerInfo(context.Background(), legacyCfg)
+	if err != nil {
+		t.Fatalf("expected graceful fallback on legacy server, got error: %v", err)
+	}
+	if legacyInfo.SampleRate != DefaultSampleRate || legacyInfo.Engine != "" || legacyInfo.Model != "" {
+		t.Errorf("unexpected legacy ServerInfo: %+v", legacyInfo)
+	}
+}
+
+func TestListVoices_GRPCAndHTTPFallback(t *testing.T) {
+	ResetGRPCFallbackCache()
+	mock := &mockTTSServer{
+		engine: "vieneu-tts",
+		voiceCatalog: []*ttsv1.VoiceInfo{
+			{Id: "Hải Đăng", Name: "Hải Đăng", Languages: []string{"vi", "en"}, Gender: "male", Description: "Nam · Bắc"},
+			{Id: "Ngọc Huyền", Name: "Ngọc Huyền", Languages: []string{"vi", "en"}, Gender: "female", Description: "Nữ · Bắc"},
+		},
+		defaultVoices: map[string]string{"vi": "Hải Đăng", "en": "Hải Đăng"},
+	}
+	grpcAddr, cleanup := startMockGRPCServer(t, mock)
+	defer cleanup()
+
+	cfg := &config.Config{
+		GrpcUrl:   grpcAddr,
+		ApiToken:  "secret",
+		TTSVoices: map[string]string{"vi": "Ngọc Huyền", "en": "Hải Đăng"},
+	}
+	mock.expectedToken = "secret"
+
+	// 1. ListVoices via gRPC
+	res, err := ListVoices(context.Background(), cfg, "en")
+	if err != nil {
+		t.Fatalf("ListVoices via gRPC failed: %v", err)
+	}
+	if res.Engine != "vieneu-tts" || len(res.Voices) != 2 || res.DefaultVoices["vi"] != "Hải Đăng" {
+		t.Fatalf("unexpected ListVoices gRPC response: %+v", res)
+	}
+
+	// 2. RenderSingleLineTTSContext sends explicit voice from cfg.TTSVoices when voice arg is empty
+	if _, err := RenderSingleLineTTSContext(context.Background(), cfg, "Xin chào", "vi", ""); err != nil {
+		t.Fatalf("RenderSingleLineTTSContext with default config voice failed: %v", err)
+	}
+	if mock.lastVoice != "Ngọc Huyền" {
+		t.Fatalf("expected explicit voice 'Ngọc Huyền', got %q (role=%v)", mock.lastVoice, mock.lastRole)
+	}
+
+	// 3. HTTP /v1/voices fallback when gRPC is unreachable
+	deadGRPC := closedLocalAddr(t)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/voices" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"engine":"kokoro","voices":[{"id":"af_heart","name":"Heart","languages":["en"],"gender":"female"}],"default_voices":{"en":"af_heart"}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer httpSrv.Close()
+
+	httpCfg := &config.Config{ApiUrl: httpSrv.URL, GrpcUrl: deadGRPC}
+	httpRes, err := ListVoices(context.Background(), httpCfg, "en")
+	if err != nil {
+		t.Fatalf("ListVoices via HTTP fallback failed: %v", err)
+	}
+	if httpRes.Engine != "kokoro" || len(httpRes.Voices) != 1 || httpRes.Voices[0].ID != "af_heart" {
+		t.Fatalf("unexpected HTTP ListVoices response: %+v", httpRes)
 	}
 }

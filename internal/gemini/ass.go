@@ -307,7 +307,12 @@ func (c *Client) ProcessASSFile(
 					Text:     finalText,
 				})
 				if !filterOnly {
-					outASSLines[ev.LineIndex] = ev.Prefix + ev.LeadingTags + finalText
+					// Strip VieNeu TTS emotion tags from the visual embedded ASS subtitle.
+					visualText := StripEmotionTags(finalText)
+					if visualText == "" {
+						visualText = finalText
+					}
+					outASSLines[ev.LineIndex] = ev.Prefix + ev.LeadingTags + visualText
 				}
 			} else {
 				res.SkippedCount++
@@ -464,13 +469,23 @@ func buildASSPrompt(opts ProcessOptions, prevTail []cuePayload, filterOnly bool)
 			"Donghua / Xianxia (Hán Việt) Translation Style:",
 			"- Translate into classical Vietnamese rich in authentic Sino-Vietnamese (Hán Việt) cultivation terminology (Bán Thần, Thiên Tôn, Đạo Hữu, Sư Tôn, Bản Tọa, Lão Phu, Đan Dược, Pháp Thân, Nguyên Anh, Kim Đan, Trúc Cơ).",
 			"- Keep character names, sect names, and pronouns (ta - ngươi, sư tôn - đồ nhi, tiền bối - vãn bối, bản tọa, tại hạ) consistent.",
-			"- For \"d\" (dialogue): write smooth, natural spoken Vietnamese without awkward ellipses (...), brackets [], (), or asterisks *.",
+			"- For \"d\" (dialogue): write smooth, natural spoken Vietnamese without awkward ellipses (...), parentheses (), asterisks *, or brackets [] EXCEPT the 3 allowed VieNeu emotion tags below.",
+			"- VieNeu Emotion Tags (ONLY these 3 when dialogue genuinely expresses them): [cười] (chuckle/laugh), [thở dài] (sigh), [hắng giọng] (clear throat). Keep \"hmm\" / \"hừm\" as plain text, NOT in brackets.",
 		)
 	} else {
 		rules = append(rules,
 			fmt.Sprintf("Translate all \"d\" (dialogue) and \"s\" (signs/descriptions) naturally into %s.", langName),
-			"For \"d\" (dialogue): strip speaker prefixes, brackets [], (), and awkward ellipses (...) so TTS reads smoothly.",
+			"For \"d\" (dialogue): strip speaker prefixes, parentheses (), and awkward ellipses (...) so TTS reads smoothly.",
 		)
+		if normLang != "en" {
+			rules = append(rules,
+				"For \"d\" (dialogue), you may use ONLY these 3 VieNeu emotion tags when genuinely expressed (no other brackets []): [cười] (chuckle/laugh), [thở dài] (sigh), [hắng giọng] (clear throat). Keep \"hmm\" / \"hừm\" as plain text.",
+			)
+		} else {
+			rules = append(rules,
+				"For \"d\" (dialogue), do NOT use any bracketed tags [] (Kokoro English reads bracketed words literally).",
+			)
+		}
 	}
 
 	if len(prevTail) > 0 {
