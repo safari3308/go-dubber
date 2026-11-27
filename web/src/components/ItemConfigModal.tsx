@@ -151,9 +151,10 @@ export function ItemConfigModal({
         description: `Embedded #${idx} (${emb?.language || 'unknown'})`,
       };
     }
-    const p = val.slice('external:'.length);
+    const rawPath = val.slice('external:'.length).trim();
+    const p = rawPath.replace(/^['"]+|['"]+$/g, '');
     const cand = (extCandidates[lang] || []).find((c) => c.path === p);
-    const ext = p.split('.').pop()?.toLowerCase() || 'srt';
+    const ext = p.split('.').pop()?.replace(/['"]+$/g, '').toLowerCase() || 'srt';
     return {
       type: 'external',
       path: p,
@@ -351,6 +352,7 @@ export function ItemConfigModal({
               { key: 'force_reprocess', label: 'Force Reprocess' },
               { key: 'ai_track_as_first_track', label: 'AI Audio as Track #0' },
               { key: 'drop_song_subtitles', label: 'Drop Song/Karaoke Subs' },
+              { key: 'convert_to_mkv', label: 'Convert to MKV (Keep .ASS)' },
               { key: 'use_gemini', label: 'Use Google AI (Gemini)' },
               { key: 'gemini_clean_for_tts', label: 'AI: Clean Descriptions' },
               { key: 'gemini_translate', label: 'AI: Translate Dialogue' },
@@ -689,8 +691,37 @@ export function ItemConfigModal({
                       );
                     })()}
 
+                    {/* Mode Toggle: Dub + Sub vs Fix & Replace Sub Only */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/70 px-3 py-2">
+                      <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(spec.sub_only)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            updateSpec(lang, (s) => ({
+                              ...s,
+                              sub_only: checked,
+                              // When switching to Sub Only on an embedded sub, default to replacing that sub track!
+                              replace_sub_index:
+                                checked &&
+                                (s.replace_sub_index === undefined || s.replace_sub_index === null) &&
+                                s.tts_sub?.type === 'embedded'
+                                  ? s.tts_sub.embedded_index
+                                  : s.replace_sub_index,
+                            }));
+                          }}
+                          className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-950 text-amber-500"
+                        />
+                        <span className="font-medium">Fix &amp; replace subtitle only (skip TTS voiceover)</span>
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        {spec.sub_only ? 'Fast stream-copy remux' : 'Full TTS + remux'}
+                      </span>
+                    </div>
+
                     {/* Output Audio Track Action: Add New vs Replace Existing Track */}
-                    {audioStreams.length > 0 && (
+                    {!spec.sub_only && audioStreams.length > 0 && (
                       <div>
                         <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
                           <AudioLines className="h-3.5 w-3.5 text-fuchsia-400" />
@@ -721,6 +752,41 @@ export function ItemConfigModal({
                               {as.channels ? `, ${as.channels}ch` : ''})
                               {as.title ? ` — ${as.title}` : ''}
                               {as.is_kokoro ? ' [AI Dub]' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Output Embedded Subtitle Action: Keep/Add vs Replace Existing Sub Track */}
+                    {textEmbeddedSubs.length > 0 && (
+                      <div>
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
+                          <FileText className="h-3.5 w-3.5 text-amber-400" />
+                          Output Embedded Subtitle Action
+                        </label>
+                        <select
+                          value={
+                            spec.replace_sub_index !== undefined &&
+                            spec.replace_sub_index !== null &&
+                            spec.replace_sub_index >= 0
+                              ? String(spec.replace_sub_index)
+                              : '-1'
+                          }
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            updateSpec(lang, (s) => ({
+                              ...s,
+                              replace_sub_index: val,
+                            }));
+                          }}
+                          className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
+                        >
+                          <option value="-1">Keep existing / Add as a new subtitle track</option>
+                          {textEmbeddedSubs.map((s) => (
+                            <option key={`repsub-${s.sub_index}`} value={String(s.sub_index)}>
+                              Replace Sub #{s.sub_index} — {s.language || 'und'} ({s.codec_name})
+                              {s.title ? ` — ${s.title}` : ''}
                             </option>
                           ))}
                         </select>

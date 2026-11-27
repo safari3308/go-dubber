@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -100,9 +101,10 @@ func ExtractAudioAnchorContext(ctx context.Context, videoPath, outputPath string
 	return nil
 }
 
-// RemuxOptions controls per-job audio track selection and replacement during remuxing.
+// RemuxOptions controls per-job audio & subtitle track selection and replacement during remuxing.
 type RemuxOptions struct {
 	ReplaceAudioIndex  *int // nil or <0 = add new track; >=0 = replace existing relative audio track #N
+	ReplaceSubIndex    *int // nil = legacy (replace AI sub if any); <0 = keep all & add new; >=0 = replace relative subtitle track #N
 	OriginalAudioIndex *int // nil = auto-select via cfg.OriginalLanguage; >=0 = explicit source audio track #N
 	NoBackgroundAudio  bool // true = TTS voice only (no original background audio mixed in)
 }
@@ -218,13 +220,24 @@ func RemuxVideoWithOptions(
 	// =========================================================================
 	// PASS 2: MUX VIDEO, STREAM COPY AUDIO & EMBED SUBTITLE
 	// =========================================================================
+	ext := strings.ToLower(filepath.Ext(outTempPath))
+	isMP4Container := ext == ".mp4" || ext == ".mov" || ext == ".m4v"
+	isAVIContainer := ext == ".avi"
+
 	hasSubInput := isExternalSub && subPath != "" && textutil.FileExists(subPath)
+	effectiveSubPath := subPath
+	if hasSubInput && isMP4Container {
+		if converted, cleanup := prepareMP4Subtitle(ctx, subPath); converted != "" {
+			effectiveSubPath = converted
+			defer cleanup()
+		}
+	}
 
 	var ffmpegArgs []string
 	ffmpegArgs = append(ffmpegArgs, "-y", "-fflags", "+genpts")
 
 	if hasSubInput {
-		ffmpegArgs = append(ffmpegArgs, "-i", videoPath, "-i", tempMixedAudio, "-i", subPath)
+		ffmpegArgs = append(ffmpegArgs, "-i", videoPath, "-i", tempMixedAudio, "-i", effectiveSubPath)
 	} else {
 		ffmpegArgs = append(ffmpegArgs, "-i", videoPath, "-i", tempMixedAudio)
 	}
@@ -295,18 +308,32 @@ func RemuxVideoWithOptions(
 	}
 
 	// 3. Map Subtitles
-	ext := strings.ToLower(filepath.Ext(outTempPath))
-	isMP4Container := ext == ".mp4" || ext == ".mov" || ext == ".m4v"
-	isAVIContainer := ext == ".avi"
+	shouldSkipSubStream := func(relSubIdx int, st FFprobeStream) bool {
+		if !hasSubInput {
+			return false
+		}
+		if opts.ReplaceSubIndex != nil {
+			if *opts.ReplaceSubIndex >= 0 {
+				return relSubIdx == *opts.ReplaceSubIndex
+			}
+			// Explicitly adding a new subtitle track (ReplaceSubIndex < 0): keep all existing subtitles
+			return false
+		}
+		// Default legacy behavior: replace prior AI sub track if any
+		return isAISubTrack(st.Tags.Title)
+	}
 
 	keptSubCount := 0
 	if isAVIContainer {
 		fmt.Println("    ⚠️ AVI container format detected: Skipping embedded subtitle stream mapping as AVI does not support subtitle tracks.")
 	} else {
 		if len(streams) > 0 {
+			relSubIdx := 0
 			for _, st := range streams {
 				if st.CodecType == "subtitle" {
-					if hasSubInput && isAISubTrack(st.Tags.Title) {
+					skip := shouldSkipSubStream(relSubIdx, st)
+					relSubIdx++
+					if skip {
 						continue
 					}
 					if isMP4Container && IsBitmapSubtitleCodec(st.CodecName) {
@@ -391,6 +418,145 @@ func RemuxVideoWithOptions(
 		return fmt.Errorf("video processing error (Pass 2): %v", err)
 	}
 
+	return nil
+}
+
+var (
+	reMP4FontTag = regexp.MustCompile(`(?i)</?font[^>]*>`)
+	reMP4ASSTag  = regexp.MustCompile(`\{[^}]*\}`)
+)
+
+// prepareMP4Subtitle converts an ASS/SSA file to clean SRT (stripping <font size="..."> tags)
+// before muxing into MP4/MOV mov_text. MP4 tx3g interprets <font size="73"> as literal 73pt text
+// instead of scaling by ASS PlayResY, causing full-screen giant subtitles in players.
+func prepareMP4Subtitle(ctx context.Context, subPath string) (string, func()) {
+	subExt := strings.ToLower(filepath.Ext(subPath))
+	if subExt != ".ass" && subExt != ".ssa" {
+		return "", func() {}
+	}
+	tmpSRT := subPath + ".mp4.srt"
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", subPath, tmpSRT)
+	if err := cmd.Run(); err != nil {
+		_ = os.Remove(tmpSRT)
+		return "", func() {}
+	}
+	if data, err := os.ReadFile(tmpSRT); err == nil {
+		cleaned := reMP4FontTag.ReplaceAllString(string(data), "")
+		cleaned = reMP4ASSTag.ReplaceAllString(cleaned, "")
+		_ = os.WriteFile(tmpSRT, []byte(cleaned), 0644)
+	}
+	return tmpSRT, func() { _ = os.Remove(tmpSRT) }
+}
+
+// ReplaceSubtitleOnlyContext performs a fast stream-copy remux (no video or audio re-encoding)
+// that replaces embedded subtitle track #replaceSubIndex (or appends a new subtitle track when nil / < 0)
+// with subPath while preserving all video, audio, and font attachment streams.
+func ReplaceSubtitleOnlyContext(
+	ctx context.Context,
+	videoPath string,
+	subPath string,
+	outTempPath string,
+	lang string,
+	replaceSubIndex *int,
+) error {
+	if subPath == "" || !textutil.FileExists(subPath) {
+		return fmt.Errorf("subtitle file not found: %s", subPath)
+	}
+
+	ext := strings.ToLower(filepath.Ext(outTempPath))
+	if ext == ".avi" {
+		return fmt.Errorf("AVI container does not support embedded subtitle tracks")
+	}
+	isMP4Container := ext == ".mp4" || ext == ".mov" || ext == ".m4v"
+
+	effectiveSubPath := subPath
+	if isMP4Container {
+		if converted, cleanup := prepareMP4Subtitle(ctx, subPath); converted != "" {
+			effectiveSubPath = converted
+			defer cleanup()
+		}
+	}
+
+	trackLang := "vie"
+	subTitle := "AI Vietnamese"
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "en", "eng", "english":
+		trackLang = "eng"
+		subTitle = "AI English"
+	}
+
+	streams, _ := inspectStreams(videoPath)
+
+	ffmpegArgs := []string{
+		"-y", "-fflags", "+genpts",
+		"-i", videoPath,
+		"-i", effectiveSubPath,
+		"-avoid_negative_ts", "make_zero",
+		"-map", "0:v:0",
+		"-map", "0:a?",
+	}
+
+	shouldSkipSubStream := func(relSubIdx int, st FFprobeStream) bool {
+		if replaceSubIndex != nil {
+			if *replaceSubIndex >= 0 {
+				return relSubIdx == *replaceSubIndex
+			}
+			return false
+		}
+		return isAISubTrack(st.Tags.Title)
+	}
+
+	keptSubCount := 0
+	if len(streams) > 0 {
+		relSubIdx := 0
+		for _, st := range streams {
+			if st.CodecType == "subtitle" {
+				skip := shouldSkipSubStream(relSubIdx, st)
+				relSubIdx++
+				if skip {
+					continue
+				}
+				if isMP4Container && IsBitmapSubtitleCodec(st.CodecName) {
+					continue
+				}
+				ffmpegArgs = append(ffmpegArgs, "-map", fmt.Sprintf("0:%d", st.Index))
+				keptSubCount++
+			}
+		}
+	} else {
+		ffmpegArgs = append(ffmpegArgs, "-map", "0:s?")
+	}
+
+	// Map replacement/new subtitle from input #1
+	ffmpegArgs = append(ffmpegArgs, "-map", "1:s:0")
+	// Preserve font attachments
+	ffmpegArgs = append(ffmpegArgs, "-map", "0:t?")
+
+	// Pure stream copy for video & audio
+	ffmpegArgs = append(ffmpegArgs, "-c:v", "copy", "-c:a", "copy")
+	if isMP4Container {
+		ffmpegArgs = append(ffmpegArgs, "-c:s", "mov_text")
+	} else {
+		subCodec := SubtitleCodecForOutput(subPath, outTempPath)
+		ffmpegArgs = append(ffmpegArgs, "-c:s", "copy", fmt.Sprintf("-c:s:%d", keptSubCount), subCodec)
+	}
+
+	ffmpegArgs = append(ffmpegArgs,
+		fmt.Sprintf("-metadata:s:s:%d", keptSubCount), "title="+subTitle,
+		fmt.Sprintf("-metadata:s:s:%d", keptSubCount), "language="+trackLang,
+		"-max_interleave_delta", "0",
+		outTempPath,
+	)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("subtitle-only remux error: %v (%s)", err, strings.TrimSpace(stderr.String()))
+	}
 	return nil
 }
 

@@ -477,6 +477,7 @@ export function SettingsModal({
                     { key: 'skip_sub_sync', label: 'Skip subtitle sync by default' },
                     { key: 'drop_song_subtitles', label: 'Drop song / karaoke subtitles' },
                     { key: 'ai_track_as_first_track', label: 'Set AI audio as Track #0' },
+                    { key: 'convert_to_mkv', label: 'Convert non-MKV to MKV (preserve .ASS)' },
                   ].map(({ key, label }) => (
                     <label
                       key={key}

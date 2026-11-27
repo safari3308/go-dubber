@@ -48,6 +48,7 @@ type ItemConfig struct {
 	ForceReprocess      bool                       `json:"force_reprocess"`
 	AITrackAsFirstTrack bool                       `json:"ai_track_as_first_track"`
 	DropSongSubtitles   bool                       `json:"drop_song_subtitles"`
+	ConvertToMKV        bool                       `json:"convert_to_mkv,omitempty"`
 	VolumeBoost         string                     `json:"volume_boost"`
 	UseGemini           bool                       `json:"use_gemini,omitempty"`
 	GeminiCleanForTTS   bool                       `json:"gemini_clean_for_tts,omitempty"`
@@ -86,6 +87,7 @@ func ItemConfigFromGlobal(cfg *config.Config) ItemConfig {
 		ForceReprocess:      cfg.ForceReprocess,
 		AITrackAsFirstTrack: cfg.AITrackAsFirstTrack,
 		DropSongSubtitles:   cfg.DropSongSubtitles,
+		ConvertToMKV:        cfg.ConvertToMKV,
 		VolumeBoost:         cfg.FFmpeg.VolumeBoost,
 		UseGemini:           cfg.GeminiEnabled,
 		GeminiCleanForTTS:   cfg.GeminiCleanForTTS,

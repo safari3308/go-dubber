@@ -73,15 +73,17 @@ func collapseRepeatedChars(s string) string {
 
 // CleanDialogueLine cleans dialogue text lines for TTS synthesis.
 func CleanDialogueLine(textLine string, lang string) string {
-	// 1. Remove ASS/SSA {...} and HTML <...>
-	clean := reASS.ReplaceAllString(textLine, "")
+	// 1. Strip inline ASS vector drawing blocks (\p1..\p0), ASS {...} tags, and HTML <...> tags
+	clean := StripVectorDrawings(textLine)
+	clean = reASS.ReplaceAllString(clean, "")
 	clean = reHTML.ReplaceAllString(clean, "")
 
-	// Keep content inside (), [], just remove the brackets (e.g., "(Tập 53)" -> "Tập 53")
-	clean = strings.ReplaceAll(clean, "(", " ")
-	clean = strings.ReplaceAll(clean, ")", " ")
-	clean = strings.ReplaceAll(clean, "[", " ")
-	clean = strings.ReplaceAll(clean, "]", " ")
+	// 1.5. Normalize ASS line-break escapes and strip sound/action descriptions in [...] and (...)
+	clean = strings.ReplaceAll(clean, "\r\n", " ")
+	clean = strings.ReplaceAll(clean, `\N`, " ")
+	clean = strings.ReplaceAll(clean, `\n`, " ")
+	clean = strings.ReplaceAll(clean, `\h`, " ")
+	clean = StripBracketDescriptions(clean, lang)
 
 	// 2. Remove speaker name prefixes (e.g. "JOHN: Hello", "ANNOUNCER 1: ")
 	clean = rePrefix.ReplaceAllString(clean, "")
@@ -236,62 +238,10 @@ func FilterSongAndKaraokeSubtitles(srtPath, outSrtPath string) (int, int, error)
 	return totalCount, len(keptBlocks), nil
 }
 
-// ParseSRT parses and cleans SRT subtitles.
+// ParseSRT parses and cleans SRT/VTT/ASS subtitles for TTS (preferring direct ASS parsing,
+// using go-astisub for SRT, and applying description stripping, deduplication, and anti-overlap).
 func ParseSRT(srtPath string, lang string) ([]SubEntry, error) {
-	content, err := os.ReadFile(srtPath)
-	if err != nil {
-		return nil, err
-	}
-
-	matches := reSRTBlock.FindAllStringSubmatch(string(content), -1)
-
-	var entries []SubEntry
-	for _, m := range matches {
-		idx, _ := strconv.Atoi(m[1])
-		startSec := SRTTimeToSeconds(m[2])
-		endSec := SRTTimeToSeconds(m[3])
-		rawText := m[4]
-
-		if IsSongOrKaraokeLine(rawText, startSec, endSec) {
-			continue
-		}
-
-		rawLines := strings.Split(rawText, "\n")
-		var cleanLines []string
-		for _, l := range rawLines {
-			l = strings.TrimSpace(l)
-			if l == "" || isStatLine(l) {
-				continue
-			}
-			cleaned := CleanDialogueLine(l, lang)
-			if cleaned != "" {
-				cleanLines = append(cleanLines, cleaned)
-			}
-		}
-
-		if len(cleanLines) == 0 {
-			continue
-		}
-
-		finalText := strings.Join(cleanLines, " ")
-		hasAlnum := false
-		for _, r := range finalText {
-			if unicode.IsLetter(r) || unicode.IsDigit(r) {
-				hasAlnum = true
-				break
-			}
-		}
-
-		if hasAlnum {
-			entries = append(entries, SubEntry{
-				Index:    idx,
-				StartSec: startSec,
-				EndSec:   endSec,
-				Text:     finalText,
-			})
-		}
-	}
-	return entries, nil
+	return ParseSubtitleForTTS(srtPath, ParseOptions{Lang: lang})
 }
 
 // StripFontTags removes HTML font tags and ASS font-size overrides.

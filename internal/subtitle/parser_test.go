@@ -45,10 +45,16 @@ func TestCleanDialogueLine(t *testing.T) {
 			expected: "Hello world",
 		},
 		{
-			name:     "Parentheses preservation",
-			input:    "(Tập 53) Hello",
+			name:     "Bracket and parenthesized descriptions stripped",
+			input:    "(music) [door opens] Hello",
 			lang:     "en",
-			expected: "Tập 53 Hello",
+			expected: "Hello",
+		},
+		{
+			name:     "VieNeu emotion tag preserved for Vietnamese",
+			input:    "[cười] Xin chào [tiếng bước chân]",
+			lang:     "vi",
+			expected: "[cười] Xin chào",
 		},
 		{
 			name:     "Speaker prefix removal",

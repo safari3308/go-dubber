@@ -24,9 +24,11 @@
 - **Live-Mutable Queue & Lifecycle Controls**:
   - **Start / Pause / Stop**, **Start Single Item**, **Clear Completed**, and smart **Start All** (upgrades a single-item run to process all remaining pending items while skipping completed tasks).
   - Add files/folders (via Server File Browser or cross-platform **Quick Paste Path** supporting macOS Finder *"Copy as Pathname"* & Windows Explorer *"Copy as path"*), reorder, edit per-item configs, or remove/cancel items **while the queue is running**.
-- **Dual-Subtitle Pipeline (TTS vs. Embedded ASS) & Google AI (Gemini)**:
+- **Dual-Subtitle Pipeline (TTS vs. Embedded ASS), Subtitle-Only Fix & Google AI (Gemini)**:
   - Separate **TTS Subtitle** (e.g., clean `.srt`) and **Embed Subtitle** (e.g., `.ass` preserving styles, signs, and descriptions in MKV containers).
-  - Optional **Google AI (`gemini-flash-latest`)** subtitle translation & cleanup — supports native `.ass` dual-output (translates and tags signs/music/descriptions so local Go filters them out of TTS while keeping the full styled `.ass` embedded in the video), plus Standard and Donghua/Xianxia (Hán Việt) presets.
+  - **Direct `.ass` Parsing & Local 0-Token Fixing**: Parses `[Events]` directly (filtering `Style`/`Name`, `\p1...\p0` vector drawings, `[...]`/`(...)` sound descriptions, karaoke tags, and `TN:`/credit lines), deduplicates/resolves overlapping cues, normalizes oversized custom-font styles, and hides song/OP/ED lines as `Comment:` in embedded `.ass`.
+  - **Replace Embedded Subtitle, Subtitle-Only Mode & Convert to MKV**: Replace any embedded subtitle track (`#N`), run fast stream-copy **Fix & Replace Subtitle Only** (skipping TTS), or enable **Convert to MKV** on `.mp4` files to preserve full styled `.ass` subtitles.
+  - Optional **Google AI (`gemini-flash-latest`)** subtitle translation & cleanup — supports native `.ass` dual-output with automatic missing-ID / untranslated-echo retries, plus Standard and Donghua/Xianxia (Hán Việt) presets.
   - **1-Click Extract Embedded Subtitles** (Download `.ass`/`.srt` or Copy to Clipboard).
   - **Upload or Drag & Drop** external subtitles directly onto any queue item with language (`EN`/`VI`) and role (`TTS + Embed`, `TTS Only`, `Embed Only`) selection.
 - **Audio Track Controls**:
@@ -61,7 +63,10 @@ Go Server (cmd/go-dubber)
 - **[Go](https://go.dev/)** 1.22+ (1.26+ recommended)
 - **[Node.js](https://nodejs.org/)** 20+ (only needed when building the React UI from source)
 - **[FFmpeg](https://ffmpeg.org/)** & `ffprobe` available in `PATH`
-- **TTS Backend**: **[tts-service](https://github.com/safari3308/tts-service)** (recommended default backend supporting Vietnamese & English TTS + subtitle synchronization) — or any custom server implementing the [TTS Backend API Specification](#tts-backend-api-specification) below. *(For English-only offline dubbing, you can also enable **Browser EN (KokoroJS)** directly in the web UI header.)*
+- **TTS Backend** (both share the same gRPC + HTTP contract):
+  - **[vieneu-tts-service](https://github.com/safari3308/vieneu-tts-service)** — **VieNeu-TTS** (48 kHz high-fidelity Vietnamese & English, `v3turbo`/`v3nano`, preset voices + reference voice cloning, inline Vietnamese emotion tags `[cười]`, `[thở dài]`, `[hắng giọng]`)
+  - **[tts-service](https://github.com/safari3308/tts-service)** — **Kokoro** (24 kHz lightweight Vietnamese & English)
+  - Or any custom server implementing the [TTS Backend API Specification](#tts-backend-api-specification) below. *(For English-only offline dubbing, you can also enable **Browser EN (KokoroJS)** directly in the web UI header.)*
 
 ---
 
@@ -97,16 +102,17 @@ cd web && npm install && npm run dev
 
 ## TTS Backend API Specification
 
-The default backend is **[safari3308/tts-service](https://github.com/safari3308/tts-service)**, which exposes both **gRPC** (port `50051`) and **HTTP** (port `8000`). Go-Dubber tries gRPC first and automatically falls back to HTTP if gRPC is unavailable (or if `grpc_url` is set to `"disabled"`).
+Both **[safari3308/vieneu-tts-service](https://github.com/safari3308/vieneu-tts-service)** (VieNeu-TTS, 48 kHz) and **[safari3308/tts-service](https://github.com/safari3308/tts-service)** (Kokoro, 24 kHz) implement the same **gRPC** (port `50051`) and **HTTP** (port `8000`) contract. Go-Dubber tries gRPC first, queries engine/model/sample-rate metadata via `GetInfo` / `GET /v1/info`, and automatically falls back to HTTP if gRPC is unavailable (or if `grpc_url` is set to `"disabled"`).
 
 ### gRPC Transport (Preferred)
 
 Defined in [`proto/tts/v1/tts.proto`](proto/tts/v1/tts.proto):
 
 - **Address**: Defaults to `<api_url host>:50051` when `grpc_url` is empty; override with `host:port` or set `"disabled"` for HTTP-only.
-- **Auth**: gRPC metadata `authorization: Bearer <api_token>` (health check is public).
+- **Auth**: gRPC metadata `authorization: Bearer <api_token>` (health check and `GetInfo` are public).
 - **Health Check**: Standard `grpc.health.v1.Health/Check` (`service: ""`, expects `SERVING`).
-- **Synthesis**: `tts.v1.TTSService/Synthesize` (`text`, `lang`, `role`, `speed` → 24 kHz 16-bit mono PCM WAV).
+- **Service Metadata**: `tts.v1.TTSService/GetInfo` (returns `engine`, `model`, `sample_rate`, `native_sample_rate`, and `voices`).
+- **Synthesis**: `tts.v1.TTSService/Synthesize` (`text`, `lang`, `role`, `speed` → 16-bit mono PCM WAV at the backend's active sample rate, e.g. 24 kHz or 48 kHz).
 - **Subtitle Sync**: `tts.v1.TTSService/SyncSubtitleStream` (client-streaming metadata `REFERENCE_TYPE_SUB` / `REFERENCE_TYPE_AUDIO`, target SRT chunks, and reference file chunks → `synced_srt`).
 
 ### HTTP Transport (Fallback / Custom Backends)
@@ -122,11 +128,21 @@ Authorization: Bearer <api_token>
 
 ---
 
-### 1. Health Check (Required)
+### 1. Health Check & Metadata (Required / Optional)
 Polled every 10 seconds by Go-Dubber (3-second timeout).
 
-- **Endpoint**: `GET /health`
-- **Success Response**: `200 OK` (body ignored; e.g. `{"status": "ok"}`)
+- **Health Endpoint**: `GET /health` → `200 OK` (e.g. `{"status": "ok"}`)
+- **Info Endpoint (Optional, unauthenticated)**: `GET /v1/info` → `200 OK`:
+  ```json
+  {
+    "engine": "vieneu-tts",
+    "model": "v3turbo",
+    "sample_rate": 48000,
+    "native_sample_rate": 48000,
+    "voices": { "vi_a": "Thiện Minh", "vi_b": "Ngọc Huyền" }
+  }
+  ```
+  *(Older servers returning `404` gracefully default to `24000` Hz.)*
 
 ---
 
@@ -158,7 +174,7 @@ Synthesizes one dialogue subtitle line into WAV audio. Go-Dubber calls this conc
   - **Required Audio Format**:
     - Container: Standard RIFF/WAVE header containing a `data` chunk
     - Encoding: Uncompressed **16-bit signed little-endian PCM** (`pcm_s16le`)
-    - Sample Rate: **24,000 Hz**
+    - Sample Rate: Dynamic (read from WAV header / `/v1/info`, e.g. **24,000 Hz** for Kokoro or **48,000 Hz** for VieNeu-TTS; mixed rates are resampled automatically)
     - Channels: **1 (Mono)**
 - **Error Response**: Any non-`200` status code with an error message in the response body.
 

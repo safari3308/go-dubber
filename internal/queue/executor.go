@@ -79,17 +79,35 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	effCfg.UseGPU = useGPU
 	effCfg.FFmpeg = resolvedFF
 
-	// 1. Check TTS server availability
+	// Check if all requested languages are subtitle-only (no TTS synthesis needed)
+	allSubOnly := len(job.Config.LanguageSpecs) > 0
+	if allSubOnly {
+		specByLang := make(map[string]subtitle.LanguageDubSpec, len(job.Config.LanguageSpecs))
+		for _, s := range job.Config.LanguageSpecs {
+			specByLang[strings.ToLower(strings.TrimSpace(s.Language))] = s
+		}
+		for _, l := range effCfg.DubLanguages {
+			sp, ok := specByLang[strings.ToLower(strings.TrimSpace(l))]
+			if !ok || !sp.SubOnly {
+				allSubOnly = false
+				break
+			}
+		}
+	}
+
+	// 1. Check TTS server availability (skipped when all languages are subtitle-only)
 	remoteTTSAvailable := false
 	var remoteTTSErr string
-	if mon := mgr.TTSMonitor(); mon != nil {
-		st := mon.CheckNow(ctx)
-		remoteTTSAvailable = st.Available
-		remoteTTSErr = st.Error
-	} else if err := tts.CheckServerHealthContext(ctx, &effCfg); err == nil {
-		remoteTTSAvailable = true
-	} else {
-		remoteTTSErr = err.Error()
+	if !allSubOnly {
+		if mon := mgr.TTSMonitor(); mon != nil {
+			st := mon.CheckNow(ctx)
+			remoteTTSAvailable = st.Available
+			remoteTTSErr = st.Error
+		} else if err := tts.CheckServerHealthContext(ctx, &effCfg); err == nil {
+			remoteTTSAvailable = true
+		} else {
+			remoteTTSErr = err.Error()
+		}
 	}
 
 	browserBridge := mgr.BrowserTTS()
@@ -97,7 +115,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 	// Use Browser KokoroJS strictly as an offline fallback when the remote TTS backend is unavailable.
 	useBrowserForEN := browserENReady && !remoteTTSAvailable
 
-	if !remoteTTSAvailable {
+	if !allSubOnly && !remoteTTSAvailable {
 		if !useBrowserForEN {
 			return fmt.Errorf("TTS server unavailable (%s): %s (enable Browser EN KokoroJS in header for local English fallback)", effCfg.ApiUrl, remoteTTSErr)
 		}
@@ -272,11 +290,10 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		}
 
 		// 4c. Optional Google AI (Gemini) subtitle cleanup / translation for TTS
-		//     If source is .ass/.ssa, use native ASS parser to produce BOTH:
-		//       - gemini_<lang>.ass (preserving styles, signs & descriptions for video embed)
-		//       - gemini_<lang>.srt (strictly spoken dialogue for clean TTS voiceover)
+		//     (Skipped when SubOnly is true and a separate external EmbedSub is chosen, since TTSSub is unused.)
+		hasSeparateExternalEmbed := spec.EmbedSub != nil && spec.EmbedSub.IsValid() && spec.EmbedSub.Type == "external" && spec.EmbedSub.Path != spec.TTSSub.Path
 		geminiEmbedASS := ""
-		if job.Config.UseGemini && (job.Config.GeminiCleanForTTS || job.Config.GeminiTranslate) {
+		if !(spec.SubOnly && hasSeparateExternalEmbed) && job.Config.UseGemini && (job.Config.GeminiCleanForTTS || job.Config.GeminiTranslate) {
 			if strings.TrimSpace(effCfg.GeminiAPIKey) == "" {
 				logWarn(fmt.Sprintf("[%s] Gemini AI is enabled for this item, but no Gemini API key is configured in Settings — skipping AI subtitle pass.", lang))
 			} else {
@@ -297,10 +314,11 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 						style = effCfg.GeminiStyle
 					}
 					opts := gemini.ProcessOptions{
-						TargetLang:  lang,
-						Translate:   job.Config.GeminiTranslate,
-						CleanForTTS: job.Config.GeminiCleanForTTS,
-						Style:       style,
+						TargetLang:        lang,
+						Translate:         job.Config.GeminiTranslate,
+						CleanForTTS:       job.Config.GeminiCleanForTTS,
+						DropSongSubtitles: effCfg.DropSongSubtitles,
+						Style:             style,
 					}
 					progressFn := func(done, total int) {
 						pct := basePct + langSpan*(0.08+0.04*(float64(done)/float64(max(total, 1))))
@@ -327,12 +345,10 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 								if ctx.Err() != nil {
 									return ctx.Err()
 								}
-								logWarn(fmt.Sprintf("[%s] Google AI ASS processing failed (%v), continuing with original SRT.", lang, gErr))
+								logWarn(fmt.Sprintf("[%s] Google AI ASS processing failed (%v), falling back to local ASS filtering.", lang, gErr))
 							} else if res.DialogueCount > 0 {
 								ttsSrtPath = geminiSrt
-								if opts.Translate {
-									geminiEmbedASS = geminiAss
-								}
+								geminiEmbedASS = geminiAss
 								logInfo(fmt.Sprintf("[%s] Google AI ASS done: %d dialogue (TTS), %d signs kept in ASS, %d skipped (filter_only=%v).", lang, res.DialogueCount, res.SignCount, res.SkippedCount, res.FilterOnlyMode))
 							}
 						}
@@ -357,6 +373,32 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			}
 		}
 
+		// 4c-fallback: Pure-local 0-token ASS filtering & style normalization when source is .ass
+		// and Gemini was disabled, unconfigured, or failed (e.g. out of API tokens).
+		if geminiEmbedASS == "" && spec.TTSSub.IsASS() {
+			rawASS := filepath.Join(subsDir, fmt.Sprintf("raw_%s.ass", lang))
+			assReady := false
+			if spec.TTSSub.Type == "embedded" {
+				if textutil.FileExists(rawASS) {
+					assReady = true
+				} else if err := media.ExtractEmbeddedSubtitleCopyContext(ctx, localVideoPath, rawASS, spec.TTSSub.EmbeddedIndex); err == nil {
+					assReady = true
+				}
+			} else if textutil.FileExists(spec.TTSSub.Path) {
+				rawASS = spec.TTSSub.Path
+				assReady = true
+			}
+			if assReady {
+				localFixedAss := filepath.Join(subsDir, fmt.Sprintf("fixed_%s.ass", lang))
+				localFixedSrt := filepath.Join(subsDir, fmt.Sprintf("fixed_%s.srt", lang))
+				if res, lErr := gemini.ProcessASSLocal(rawASS, localFixedAss, localFixedSrt, effCfg.DropSongSubtitles); lErr == nil && res.DialogueCount > 0 {
+					ttsSrtPath = localFixedSrt
+					geminiEmbedASS = localFixedAss
+					logInfo(fmt.Sprintf("[%s] Local ASS filter & style fix done: %d dialogue (TTS), %d signs kept, %d songs/non-dialogue skipped.", lang, res.DialogueCount, res.SignCount, res.SkippedCount))
+				}
+			}
+		}
+
 		// 4d. Determine Embed subtitle (may be a separate .ass file for styled descriptions!)
 		embedSubPath := ""
 		isExternalEmbed := false
@@ -365,15 +407,26 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 			if !spec.EmbedSub.IsASS() && spec.EmbedSub.Path == spec.TTSSub.Path {
 				// Same non-ASS file -> use synced/processed SRT if available
 				embedSubPath = ttsSrtPath
+			} else if spec.EmbedSub.IsASS() && spec.EmbedSub.Path == spec.TTSSub.Path && geminiEmbedASS != "" && textutil.FileExists(geminiEmbedASS) {
+				// Same ASS file -> embed the fixed/normalized (and optionally translated) ASS!
+				embedSubPath = geminiEmbedASS
+			} else if spec.EmbedSub.IsASS() {
+				// Separate external .ass -> normalize oversized styles & hide songs before embedding
+				fixedSepAss := filepath.Join(subsDir, fmt.Sprintf("embed_fixed_%s.ass", lang))
+				if res, lErr := gemini.ProcessASSLocal(spec.EmbedSub.Path, fixedSepAss, "", effCfg.DropSongSubtitles); lErr == nil && textutil.FileExists(fixedSepAss) {
+					embedSubPath = fixedSepAss
+					logInfo(fmt.Sprintf("[%s] Fixed external ASS for embedding: %d dialogue, %d signs, %d songs/non-dialogue hidden.", lang, res.DialogueCount, res.SignCount, res.SkippedCount))
+				} else {
+					embedSubPath = spec.EmbedSub.Path
+				}
 			} else {
-				// Separate embed subtitle (e.g. .ass with signs/descriptions) -> preserve original file!
 				embedSubPath = spec.EmbedSub.Path
 			}
 		} else if geminiEmbedASS != "" && textutil.FileExists(geminiEmbedASS) {
-			// Embed the translated styled ASS (with signs & descriptions!)
+			// Embed the fixed/translated styled ASS (with signs & descriptions!)
 			embedSubPath = geminiEmbedASS
 			isExternalEmbed = true
-			logInfo(fmt.Sprintf("[%s] Embedding Google AI translated ASS subtitle (with signs & descriptions).", lang))
+			logInfo(fmt.Sprintf("[%s] Embedding fixed ASS subtitle (with signs & descriptions).", lang))
 		} else if job.Config.UseGemini && job.Config.GeminiTranslate {
 			// If Gemini translated a subtitle and the video has no native subtitle in target lang, embed the translated SRT
 			hasNativeEmbedded := false
@@ -388,6 +441,42 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 				isExternalEmbed = true
 				logInfo(fmt.Sprintf("[%s] Embedding translated subtitle into video (no native '%s' subtitle track existed).", lang, lang))
 			}
+		}
+
+	// Determine final destination path (optionally converting non-MKV containers to .mkv to preserve full .ass subtitles)
+	convertToMKV := job.Config.ConvertToMKV && !strings.EqualFold(filepath.Ext(job.SourcePath), ".mkv")
+	targetDestPath := job.SourcePath
+	if convertToMKV {
+		targetDestPath = strings.TrimSuffix(job.SourcePath, filepath.Ext(job.SourcePath)) + ".mkv"
+	}
+	targetBaseName := filepath.Base(targetDestPath)
+
+	// 4d-subonly: Fast subtitle-only fix & replace (skip TTS synthesis and audio/video re-encoding!)
+		if spec.SubOnly {
+			targetSub := embedSubPath
+			if targetSub == "" {
+				targetSub = ttsSrtPath
+			}
+			state.Stage = "remuxing"
+			_ = ws.SaveState(state)
+			logInfo(fmt.Sprintf("[%s] Subtitle-only mode: replacing embedded subtitle (skipping TTS voiceover)...", lang))
+			mgr.UpdateJobProgress(job.ID, JobRemuxing, "remuxing", basePct+langSpan*0.80, fmt.Sprintf("[%s] Replacing embedded subtitle only...", lang))
+
+			outTempVideo := filepath.Join(ws.JobDir(job.ID), "out_"+targetBaseName)
+			if err := media.ReplaceSubtitleOnlyContext(ctx, localVideoPath, targetSub, outTempVideo, lang, spec.ReplaceSubIndex); err != nil {
+				_ = os.Remove(outTempVideo)
+				return err
+			}
+
+			remuxedWorkVideo := filepath.Join(ws.JobDir(job.ID), targetBaseName)
+			if err := os.Rename(outTempVideo, remuxedWorkVideo); err != nil {
+				return fmt.Errorf("failed to swap subtitle-only remuxed video: %w", err)
+			}
+			localVideoPath = remuxedWorkVideo
+			state.CompletedLangs = append(state.CompletedLangs, lang)
+			_ = ws.SaveState(state)
+			completedDubs++
+			continue
 		}
 
 		// 4d. Parallel TTS synthesis with chunk reuse (or Browser KokoroJS fallback for English)
@@ -452,9 +541,10 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		logInfo(fmt.Sprintf("[%s] Remuxing video & embedding subtitle...", lang))
 		mgr.UpdateJobProgress(job.ID, JobRemuxing, "remuxing", basePct+langSpan*0.80, fmt.Sprintf("[%s] Remuxing video & embedding subtitle...", lang))
 
-		outTempVideo := filepath.Join(ws.JobDir(job.ID), "out_"+filepath.Base(localVideoPath))
+		outTempVideo := filepath.Join(ws.JobDir(job.ID), "out_"+targetBaseName)
 		remuxOpts := media.RemuxOptions{
 			ReplaceAudioIndex: spec.ReplaceAudioIndex,
+			ReplaceSubIndex:   spec.ReplaceSubIndex,
 		}
 		if job.Config.SourceAudioIndex != nil {
 			if *job.Config.SourceAudioIndex < 0 {
@@ -473,7 +563,7 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		_ = os.Remove(ttsWavPath)
 
 		// Move remuxed output to the job's working file inside workdir (never overwriting original SourcePath mid-pipeline)
-		workVideoPath := ws.LocalVideoPath(job.ID, job.SourcePath)
+		workVideoPath := filepath.Join(ws.JobDir(job.ID), targetBaseName)
 		if err := os.Rename(outTempVideo, workVideoPath); err != nil {
 			if copyErr := textutil.CopyFileContext(ctx, outTempVideo, workVideoPath, nil); copyErr != nil {
 				return fmt.Errorf("failed to update local video asset: %w", copyErr)
@@ -494,17 +584,30 @@ func ExecuteJob(ctx context.Context, mgr *Manager, job *JobItem, reuseChunks boo
 		return fmt.Errorf("no dubs succeeded")
 	}
 
-	// 5. Safe NAS replacement
+	// 5. Safe NAS replacement (handles .mp4 -> .mkv conversion atomically)
+	convertToMKVFinal := job.Config.ConvertToMKV && !strings.EqualFold(filepath.Ext(job.SourcePath), ".mkv")
+	finalDestPath := job.SourcePath
+	if convertToMKVFinal {
+		finalDestPath = strings.TrimSuffix(job.SourcePath, filepath.Ext(job.SourcePath)) + ".mkv"
+	}
+
 	state.Stage = "uploading"
 	_ = ws.SaveState(state)
-	logInfo(fmt.Sprintf("Finalizing & replacing %s...", job.FileName))
+	logInfo(fmt.Sprintf("Finalizing & replacing %s...", filepath.Base(finalDestPath)))
 	mgr.UpdateJobProgress(job.ID, JobUploading, "uploading", 92, "Uploading finalized video back to NAS...")
-	if err := textutil.SafeReplaceOnNAS(localVideoPath, job.SourcePath); err != nil {
+	if err := textutil.SafeReplaceOnNAS(localVideoPath, finalDestPath); err != nil {
 		return fmt.Errorf("failed to replace file on NAS: %w", err)
+	}
+	if convertToMKVFinal && finalDestPath != job.SourcePath {
+		if err := os.Remove(job.SourcePath); err != nil {
+			logWarn(fmt.Sprintf("MKV saved at %s, but could not remove old source %s: %v", filepath.Base(finalDestPath), filepath.Base(job.SourcePath), err))
+		} else {
+			logInfo(fmt.Sprintf("Converted container to MKV: %s -> %s", filepath.Base(job.SourcePath), filepath.Base(finalDestPath)))
+		}
 	}
 
 	var newSize int64
-	if fi, err := os.Stat(job.SourcePath); err == nil {
+	if fi, err := os.Stat(finalDestPath); err == nil {
 		newSize = fi.Size()
 	}
 	job.Metrics = &JobMetrics{

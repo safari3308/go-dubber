@@ -38,6 +38,7 @@ export interface GlobalConfig {
   skip_sub_sync: boolean;
   ai_track_as_first_track: boolean;
   drop_song_subtitles: boolean;
+  convert_to_mkv?: boolean;
   reuse_audio_chunks?: boolean;
   gemini_enabled?: boolean;
   gemini_api_key?: string;
@@ -137,6 +138,8 @@ export interface LanguageDubSpec {
   sync_tts_sub: boolean;
   sync_embed_sub: boolean;
   replace_audio_index?: number | null;
+  replace_sub_index?: number | null;
+  sub_only?: boolean;
 }
 
 export interface CandidateSubtitle {
@@ -162,6 +165,7 @@ export interface ItemConfig {
   force_reprocess: boolean;
   ai_track_as_first_track: boolean;
   drop_song_subtitles: boolean;
+  convert_to_mkv?: boolean;
   volume_boost: string;
   use_gemini?: boolean;
   gemini_clean_for_tts?: boolean;

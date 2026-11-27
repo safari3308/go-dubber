@@ -39,12 +39,13 @@ func StripEmotionTags(text string) string {
 	return strings.TrimSpace(cleaned)
 }
 
-// ProcessOptions configures how Gemini processes an SRT subtitle.
+// ProcessOptions configures how Gemini processes an SRT/ASS subtitle.
 type ProcessOptions struct {
-	TargetLang  string // "en" or "vi"
-	Translate   bool   // Translate subtitles into TargetLang
-	CleanForTTS bool   // Remove on-screen descriptions/signs/SFX and format naturally for TTS
-	Style       string // "standard" (default) or "donghua" (Xianxia / Hán Việt)
+	TargetLang        string // "en" or "vi"
+	Translate         bool   // Translate subtitles into TargetLang
+	CleanForTTS       bool   // Remove on-screen descriptions/signs/SFX and format naturally for TTS
+	DropSongSubtitles bool   // Hide song/OP/ED lines ("m") in embedded ASS as Comment:
+	Style             string // "standard" (default) or "donghua" (Xianxia / Hán Việt)
 }
 
 // SRTCue represents a single parsed SRT subtitle entry with its original timestamp line.
@@ -184,6 +185,30 @@ func (c *Client) ProcessCues(ctx context.Context, cues []SRTCue, opts ProcessOpt
 		byID := make(map[int]string, len(updated))
 		for _, u := range updated {
 			byID[u.ID] = u.Text
+		}
+		// Retry any IDs omitted by Gemini or echoed untranslated in this batch (up to 2 retries).
+		targetIsVI := strings.ToLower(strings.TrimSpace(opts.TargetLang)) != "en"
+		for retry := 0; retry < 2; retry++ {
+			var missing []cuePayload
+			for _, inp := range batch {
+				outText, ok := byID[inp.ID]
+				if !ok || (opts.Translate && targetIsVI && strings.TrimSpace(outText) != "" && looksUntranslatedToVI(inp.Text, outText)) {
+					missing = append(missing, inp)
+				}
+			}
+			if len(missing) == 0 {
+				break
+			}
+			retryUpdated, rErr := c.processBatch(ctx, missing, prevTail, opts)
+			if rErr != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				break
+			}
+			for _, u := range retryUpdated {
+				byID[u.ID] = u.Text
+			}
 		}
 		var nextTail []cuePayload
 		for i := start; i < end; i++ {

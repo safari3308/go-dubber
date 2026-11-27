@@ -27,10 +27,17 @@ func (s SubtitleSource) IsValid() bool {
 	return s.Type == "embedded"
 }
 
-// IsASS returns true when the subtitle format is ASS or SSA.
+// IsASS returns true when the subtitle format or file extension is ASS or SSA.
 func (s SubtitleSource) IsASS() bool {
-	f := strings.ToLower(strings.TrimPrefix(s.Format, "."))
-	return f == "ass" || f == "ssa"
+	f := strings.ToLower(strings.Trim(strings.TrimSpace(s.Format), ".'\" "))
+	if f == "ass" || f == "ssa" {
+		return true
+	}
+	if s.Path != "" {
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(strings.Trim(strings.TrimSpace(s.Path), "'\" ")), "."))
+		return ext == "ass" || ext == "ssa"
+	}
+	return false
 }
 
 // LanguageDubSpec defines the dual-subtitle configuration for a single dubbing language.
@@ -41,6 +48,8 @@ type LanguageDubSpec struct {
 	SyncTTSSub        bool            `json:"sync_tts_sub"`                  // Run subsync on TTSSub when external
 	SyncEmbedSub      bool            `json:"sync_embed_sub"`                // Run subsync on EmbedSub when external
 	ReplaceAudioIndex *int            `json:"replace_audio_index,omitempty"` // nil or <0 = add new track; >=0 = replace relative audio track #N
+	ReplaceSubIndex   *int            `json:"replace_sub_index,omitempty"`   // nil = legacy (replace AI sub if any); <0 = keep all & add new; >=0 = replace relative subtitle track #N
+	SubOnly           bool            `json:"sub_only,omitempty"`            // true = fix/translate & embed/replace subtitle only (skip TTS voiceover)
 }
 
 // CandidateSubtitle represents a discovered external subtitle file for a video.

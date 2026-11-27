@@ -49,6 +49,7 @@ type Config struct {
 	SkipSubSync         bool         `json:"skip_sub_sync"`
 	AITrackAsFirstTrack bool         `json:"ai_track_as_first_track"`
 	DropSongSubtitles   bool         `json:"drop_song_subtitles"`
+	ConvertToMKV        bool         `json:"convert_to_mkv,omitempty"`
 	ReuseAudioChunks    bool         `json:"reuse_audio_chunks,omitempty"`
 	GeminiEnabled       bool         `json:"gemini_enabled,omitempty"`
 	GeminiAPIKey        string       `json:"gemini_api_key,omitempty"`
